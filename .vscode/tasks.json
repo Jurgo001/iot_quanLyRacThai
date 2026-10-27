@@ -1,0 +1,40 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "IoT: Build ESP32",
+      "type": "process",
+      "command": "${env:USERPROFILE}/.platformio/penv/Scripts/platformio.exe",
+      "args": ["run"],
+      "options": { "cwd": "${workspaceFolder}/esp32_node/esp32_node" },
+      "problemMatcher": ["$gcc"],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "IoT: Chay web",
+      "type": "process",
+      "command": "${workspaceFolder}/backend_server/.venv/Scripts/python.exe",
+      "args": ["-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"],
+      "options": { "cwd": "${workspaceFolder}/backend_server" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "iot-backend",
+        "pattern": { "regexp": "^(.+):(\\d+):(\\d+): (.+)$", "file": 1, "line": 2, "column": 3, "message": 4 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Started server process",
+          "endsPattern": "Uvicorn running on"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "IoT: Khoi dong he thong",
+      "dependsOn": ["IoT: Build ESP32", "IoT: Chay web"],
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true }
+    }
+  ]
+}

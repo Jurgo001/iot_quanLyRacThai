@@ -1,0 +1,7 @@
+[wokwi]
+version = 1
+firmware = ".pio/build/esp32dev/firmware.bin"
+elf = ".pio/build/esp32dev/firmware.elf"
+
+# ESP32 gui HTTP den backend tren may tinh qua host.wokwi.internal:8000.
+# Khong can net.forward: cai do chi dung de truy cap server tren ESP32 tu PC.

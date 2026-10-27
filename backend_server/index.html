@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>Hệ Thống Quản Lý Rác Thải Thông Minh - Nhóm 15 HUIT</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Segoe UI', Tahoma, sans-serif; background: #eef2f6; color: #1e293b; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+    /* Header & Navigation Tabs */
+    header { background: linear-gradient(90deg, #0d47a1, #1565c0); color: #fff; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.18); z-index: 2000; }
+    .brand-title { font-size: 17px; font-weight: 700; letter-spacing: 0.3px; }
+    .brand-sub { font-size: 12px; opacity: 0.9; }
+    .nav-tabs { display: flex; gap: 8px; }
+    .tab-btn { background: rgba(255,255,255,0.15); color: #fff; border: 1px solid rgba(255,255,255,0.3); padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; transition: 0.2s; }
+    .tab-btn.active, .tab-btn:hover { background: #fff; color: #0d47a1; }
+
+    /* KPI Bar */
+    .kpi-bar { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; padding: 10px 16px; background: #fff; border-bottom: 1px solid #dce3ec; }
+    .kpi-card { background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #1565c0; border-radius: 6px; padding: 8px 12px; }
+    .kpi-label { font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700; }
+    .kpi-val { font-size: 20px; font-weight: 800; margin-top: 2px; }
+
+    /* Main Content Panels */
+    .tab-panel { display: none; flex: 1; overflow: hidden; }
+    .tab-panel.active { display: flex; }
+
+    /* Tab 1: Dispatch Center */
+    #sidebar { width: 450px; background: #fff; border-right: 1px solid #dce3ec; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    #map-container { flex: 1; position: relative; }
+    #map { width: 100%; height: 100%; }
+    .map-toolbar { position: absolute; top: 12px; right: 12px; z-index: 1000; background: #fff; padding: 8px 12px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.15); font-size: 12px; display: flex; gap: 10px; align-items: center; }
+
+    .btn { cursor: pointer; padding: 8px 12px; border: none; border-radius: 6px; font-weight: 700; font-size: 12px; transition: 0.15s; }
+    .btn-primary { background: #1565c0; color: #fff; width: 100%; padding: 10px; font-size: 13px; }
+    .btn-primary:hover { background: #0d47a1; }
+    .btn-secondary { background: #64748b; color: #fff; }
+    .btn-collect { background: #2e7d32; color: #fff; }
+    .btn-skip { background: #c62828; color: #fff; }
+
+    .bin-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; background: #f8fafc; margin-bottom: 8px; }
+    .badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; color: #fff; }
+    .NEED_COLLECTION { background: #d32f2f; }
+    .NEAR_FULL { background: #f57c00; }
+    .NORMAL { background: #2e7d32; }
+    .SENSOR_ERROR, .OFFLINE { background: #475569; }
+
+    .sim-slider-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; background: #eef2f6; padding: 5px 8px; border-radius: 5px; }
+    .stats-box { background: #e8f5e9; border-left: 4px solid #2e7d32; padding: 10px; border-radius: 6px; font-size: 12.5px; line-height: 1.5; }
+
+    /* Tab 2: Driver Mobile App */
+    .mobile-wrapper { flex: 1; display: flex; justify-content: center; align-items: center; padding: 20px; background: radial-gradient(circle, #dbeafe, #e2e8f0); overflow-y: auto; }
+    .phone-mockup { width: 390px; height: 92%; background: #fff; border: 10px solid #1e293b; border-radius: 34px; box-shadow: 0 15px 35px rgba(0,0,0,0.25); display: flex; flex-direction: column; overflow: hidden; }
+    .phone-notch { background: #1e293b; color: #fff; text-align: center; padding: 6px; font-size: 11px; font-weight: 600; }
+    .phone-header { background: #1565c0; color: #fff; padding: 12px 16px; }
+    .phone-body { flex: 1; padding: 12px; overflow-y: auto; background: #f1f5f9; }
+    .stop-step-card { background: #fff; border-radius: 10px; padding: 12px; margin-bottom: 10px; border-left: 5px solid #1565c0; box-shadow: 0 2px 5px rgba(0,0,0,0.06); }
+
+    /* Tab 3: Charts & Logs */
+    .analytics-wrapper { flex: 1; padding: 16px; overflow-y: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .chart-box { background: #fff; border-radius: 10px; padding: 14px; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
+    .log-box { grid-column: span 2; background: #fff; border-radius: 10px; padding: 14px; box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
+    table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+    th { background: #f1f5f9; font-weight: 700; color: #334155; }
+
+    /* Skip Modal */
+    #skip-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 9999; align-items: center; justify-content: center; }
+    .modal-box { background: #fff; padding: 18px; border-radius: 10px; width: 360px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
+    .modal-box input { width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; margin: 10px 0; font-size: 13px; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div>
+      <div class="brand-title">🗑️ HỆ THỐNG QUẢN LÝ & ĐIỀU PHỐI RÁC THẢI THÔNG MINH (IOT)</div>
+      <div class="brand-sub">Nhóm 15 - ĐH Công Thương TP.HCM (HUIT) | GVHD: ThS. Đinh Huy Hoàng</div>
+    </div>
+    <div class="nav-tabs">
+      <button class="tab-btn active" onclick="switchTab('tab-dispatch', this)">🖥️ 1. Trung Tâm Điều Phối GIS</button>
+      <button class="tab-btn" onclick="switchTab('tab-driver', this)">📱 2. App Di Động Tài Xế</button>
+      <button class="tab-btn" onclick="switchTab('tab-analytics', this)">📊 3. Biểu Đồ & Nhật Ký IoT</button>
+    </div>
+  </header>
+
+  <!-- Thanh chỉ số KPI -->
+  <div class="kpi-bar">
+    <div class="kpi-card">
+      <div class="kpi-label">Tổng số nút thùng rác</div>
+      <div class="kpi-val" id="kpi-total">6</div>
+    </div>
+    <div class="kpi-card" style="border-left-color:#d32f2f;">
+      <div class="kpi-label">Cần thu gom (>=80%)</div>
+      <div class="kpi-val" style="color:#d32f2f;" id="kpi-full">0</div>
+    </div>
+    <div class="kpi-card" style="border-left-color:#f57c00;">
+      <div class="kpi-label">Gần đầy (60% - 79%)</div>
+      <div class="kpi-val" style="color:#f57c00;" id="kpi-near">0</div>
+    </div>
+    <div class="kpi-card" style="border-left-color:#475569;">
+      <div class="kpi-label">Lỗi cảm biến / Offline</div>
+      <div class="kpi-val" style="color:#475569;" id="kpi-err">0</div>
+    </div>
+    <div class="kpi-card" style="border-left-color:#2e7d32;">
+      <div class="kpi-label">Tối ưu quãng đường (2-Opt)</div>
+      <div class="kpi-val" style="color:#2e7d32;" id="kpi-saved">0%</div>
+    </div>
+  </div>
+
+  <!-- TAB 1: TRUNG TÂM ĐIỀU PHỐI & BẢN ĐỒ GIS -->
+  <div id="tab-dispatch" class="tab-panel active">
+    <div id="sidebar">
+      <div style="display:flex; gap:6px;">
+        <button class="btn btn-primary" onclick="optimizeRoute()">🚚 LẬP TUYẾN (DIJKSTRA + TSP 2-OPT)</button>
+        <button class="btn btn-secondary" style="width:140px;" onclick="resetTrip()">🔄 Reset chuyến</button>
+      </div>
+      <div id="route-stats"></div>
+      <div style="font-size:12px; font-weight:700; color:#475569; margin-top:4px;">
+        📡 DANH SÁCH NÚT IOT & BỘ GIẢ LẬP ĐA NÚT:
+      </div>
+      <div id="bin-list"></div>
+    </div>
+
+    <div id="map-container">
+      <div class="map-toolbar">
+        <label style="cursor:pointer; font-weight:600;">
+          <input type="checkbox" id="chk-graph" checked onchange="toggleGraphLayer()" />
+          🕸️ Hiển thị Đồ thị cục bộ G=(V,E)
+        </label>
+        <label style="cursor:pointer; font-weight:600;">
+          <input type="checkbox" id="chk-osrm" checked onchange="optimizeRoute()" />
+          🛣️ Bám sát mặt đường thực tế (OSRM)
+        </label>
+      </div>
+      <div id="map"></div>
+    </div>
+  </div>
+
+  <!-- TAB 2: ỨNG DỤNG DI ĐỘNG TÀI XẾ -->
+  <div id="tab-driver" class="tab-panel">
+    <div class="mobile-wrapper">
+      <div class="phone-mockup">
+        <div class="phone-notch">📶 5G • GPS Đang Bật • 100% 🔋</div>
+        <div class="phone-header">
+          <div style="font-size:15px; font-weight:700;">🚛 ỨNG DỤNG TÀI XẾ THU GOM</div>
+          <div style="font-size:12px; opacity:0.9;">Phương tiện: Xe thu gom #01 - Khu vực Tân Phú</div>
+        </div>
+        <div class="phone-body">
+          <button class="btn btn-primary" style="margin-bottom:10px;" onclick="optimizeRoute()">🔄 Đồng bộ lộ trình từ Máy chủ</button>
+          <div id="driver-route-summary"></div>
+          <div id="driver-stops-list">
+            <div style="text-align:center; color:#64748b; padding:30px 10px; font-size:13px;">
+              Bấm "Lập tuyến" hoặc "Đồng bộ lộ trình" để nhận danh sách các điểm dừng cần thu gom.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 3: BIỂU ĐỒ THỐNG KÊ & NHẬT KÝ BẢN TIN -->
+  <div id="tab-analytics" class="tab-panel">
+    <div class="analytics-wrapper">
+      <div class="chart-box">
+        <h3 style="margin-top:0; font-size:14px; color:#0d47a1;">📊 Biểu đồ Mức đầy (%) của 6 Thùng rác so với Ngưỡng (80%)</h3>
+        <canvas id="fillChart" height="140"></canvas>
+      </div>
+      <div class="chart-box">
+        <h3 style="margin-top:0; font-size:14px; color:#1b5e20;">📉 So sánh Quãng đường Lộ trình (Mét): Tuần tự vs. Nearest Neighbor vs. 2-Opt</h3>
+        <canvas id="routeChart" height="140"></canvas>
+      </div>
+      <div class="log-box">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <h3 style="margin:0; font-size:14px; color:#0d47a1;">📝 Nhật ký Bản tin JSON Thời gian thực (Telemetry Logs - Kiểm tra chống trùng message_id)</h3>
+          <button class="btn btn-secondary" onclick="loadLogs()">🔄 Cập nhật Log</button>
+        </div>
+        <div style="max-height:220px; overflow-y:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Thời gian</th>
+                <th>Mã bản tin (message_id)</th>
+                <th>Mã thiết bị</th>
+                <th>Mã thùng</th>
+                <th>Khoảng cách (cm)</th>
+                <th>Mức đầy (%)</th>
+                <th>Trạng thái cảm biến</th>
+              </tr>
+            </thead>
+            <tbody id="log-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hộp thoại nhập lý do bỏ qua -->
+  <div id="skip-modal">
+    <div class="modal-box">
+      <h3 id="modal-title" style="margin:0 0 8px 0; color:#c62828; font-size:16px;">⚠️ Báo cáo bỏ qua điểm thu gom</h3>
+      <div style="font-size:13px;">Nhập lý do tài xế không thể tiếp cận thùng rác:</div>
+      <input type="text" id="skip-reason-input" value="Hẻm đang sửa đường, xe rác không vào được" />
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button class="btn btn-secondary" onclick="closeSkipModal()">Hủy</button>
+        <button class="btn btn-skip" onclick="submitSkipReason()">Xác nhận & Tính lại tuyến</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const map = L.map('map').setView([10.8058, 106.6292], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap | Nhóm 15 - ĐH Công Thương TP.HCM'
+    }).addTo(map);
+
+    let markers = {};
+    let graphLayerGroup = L.layerGroup().addTo(map);
+    let routeLayer = null;
+    let currentSkipBinId = null;
+    let isInteractingSlider = false;
+    let lastRouteData = null;
+
+    let fillChartInstance = null;
+    let routeChartInstance = null;
+
+    const statusLabels = {
+      "NEED_COLLECTION": "CẦN THU GOM (>=80%)",
+      "NEAR_FULL": "GẦN ĐẦY (60-79%)",
+      "NORMAL": "BÌNH THƯỜNG (<60%)"
+    };
+
+    function switchTab(tabId, btnEl) {
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+      btnEl.classList.add('active');
+      if (tabId === 'tab-dispatch') {
+        setTimeout(() => map.invalidateSize(), 150);
+      } else if (tabId === 'tab-analytics') {
+        loadLogs();
+      }
+    }
+
+    function toggleGraphLayer() {
+      const show = document.getElementById('chk-graph').checked;
+      if (show) {
+        graphLayerGroup.addTo(map);
+      } else {
+        map.removeLayer(graphLayerGroup);
+      }
+    }
+
+    function drawLocalGraph(graphNodes, graphEdges) {
+      graphLayerGroup.clearLayers();
+      graphEdges.forEach(e => {
+        const line = L.polyline(e.coords, { color: '#94a3b8', weight: 2, dashArray: '4, 4', opacity: 0.7 });
+        line.bindTooltip(`Cạnh đồ thị: ${e.from} ↔ ${e.to} (${e.weight}m)`);
+        graphLayerGroup.addLayer(line);
+      });
+      Object.keys(graphNodes).forEach(nid => {
+        const n = graphNodes[nid];
+        if (n.type === 'INTERSECTION') {
+          const m = L.circleMarker([n.lat, n.lng], {
+            radius: 5, fillColor: '#64748b', color: '#fff', weight: 1, fillOpacity: 0.9
+          }).bindTooltip(`Giao lộ ${nid}: ${n.name}`);
+          graphLayerGroup.addLayer(m);
+        }
+      });
+    }
+
+    async function loadBins() {
+      if (currentSkipBinId !== null || isInteractingSlider) return;
+
+      const res = await fetch('/api/bins');
+      const data = await res.json();
+      const listEl = document.getElementById('bin-list');
+      listEl.innerHTML = '';
+
+      if (graphLayerGroup.getLayers().length === 0 && data.graph_nodes) {
+        drawLocalGraph(data.graph_nodes, data.graph_edges);
+      }
+
+      if (!markers['DEPOT']) {
+        markers['DEPOT'] = L.marker([data.depot.lat, data.depot.lng])
+          .addTo(map)
+          .bindPopup(`<b>🏢 ${data.depot.name}</b><br>Điểm xuất phát & tập kết xe thu gom`);
+      }
+
+      let countFull = 0, countNear = 0, countErr = 0;
+
+      data.bins.forEach(b => {
+        const isErr = (b.sensor_status !== 'OK');
+        if (isErr) countErr++;
+        else if (b.status === 'NEED_COLLECTION') countFull++;
+        else if (b.status === 'NEAR_FULL') countNear++;
+
+        const badgeClass = isErr ? b.sensor_status : b.status;
+        const badgeText = isErr ? `[LỖI: ${b.sensor_status}]` : statusLabels[b.status];
+        const color = isErr ? '#475569' : (b.status === 'NEED_COLLECTION' ? '#d32f2f' : (b.status === 'NEAR_FULL' ? '#f57c00' : '#2e7d32'));
+
+        if (markers[b.bin_id]) map.removeLayer(markers[b.bin_id]);
+        markers[b.bin_id] = L.circleMarker([b.lat, b.lng], {
+          radius: 12, fillColor: color, color: '#fff', weight: 2.5, fillOpacity: 0.95
+        }).addTo(map).bindPopup(`
+          <b>${b.name}</b><br>
+          • Khoảng cách: <b>${b.distance_cm} cm</b> | Mức đầy: <b>${b.fill_percent}%</b><br>
+          • Trạng thái: <b>${badgeText}</b> ${b.is_priority ? '🔥 [ƯU TIÊN]' : ''}
+        `);
+
+        let tripStatusHtml = '';
+        if (b.trip_info) {
+          tripStatusHtml = `<div style="margin-top:5px; color:#1565c0; font-weight:700; font-size:12px;">
+            ✔ Chuyến đi: ${b.trip_info.action_status} ${b.trip_info.skip_reason ? '(' + b.trip_info.skip_reason + ')' : ''}
+          </div>`;
+        }
+
+        const sliderVal = b.distance_cm > 0 ? b.distance_cm : 50;
+
+        listEl.innerHTML += `
+          <div class="bin-card">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <strong style="font-size:13px;">${b.name} ${b.is_priority ? '🔥' : ''}</strong>
+              <span class="badge ${badgeClass}">${badgeText}</span>
+            </div>
+            <div style="font-size:12px; margin-top:5px; color:#334155;">
+              📏 Khoảng cách: <b>${b.distance_cm} cm</b> | 📊 Mức đầy: <b>${b.fill_percent}%</b> (Lần đo LT: ${b.consecutive_count})<br>
+              ⏱️ Cập nhật: ${b.seconds_ago}s trước • Thiết bị: <code>${b.device_id}</code>
+            </div>
+            <!-- Thanh trượt giả lập nhanh mức rác cho mọi thùng -->
+            <div class="sim-slider-row">
+              <span>🎛️ Giả lập khoảng cách:</span>
+              <input type="range" min="20" max="100" value="${sliderVal}" style="flex:1;"
+                onmousedown="isInteractingSlider=true"
+                onmouseup="isInteractingSlider=false"
+                onchange="simulateBin('${b.bin_id}', this.value, 'OK', ${b.is_priority})" />
+              <button class="btn" style="background:#e2e8f0; padding:3px 6px; font-size:10px;"
+                onclick="simulateBin('${b.bin_id}', -1, 'SENSOR_ERROR', ${b.is_priority})">⚡ Báo lỗi CB</button>
+            </div>
+            ${tripStatusHtml}
+            <div style="margin-top:6px;">
+              <button class="btn btn-collect" onclick="confirmStop('${b.bin_id}', 'COLLECTED')">✅ Xác nhận đã thu gom</button>
+              <button class="btn btn-skip" onclick="openSkipModal('${b.bin_id}')">⚠️ Bỏ qua điểm này</button>
+            </div>
+          </div>
+        `;
+      });
+
+      document.getElementById('kpi-total').innerText = data.bins.length;
+      document.getElementById('kpi-full').innerText = countFull;
+      document.getElementById('kpi-near').innerText = countNear;
+      document.getElementById('kpi-err').innerText = countErr;
+
+      updateFillChart(data.bins);
+    }
+
+    async function simulateBin(binId, distCm, sensorStatus, isPrio) {
+      isInteractingSlider = false;
+      await fetch('/api/simulate/bin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bin_id: binId,
+          distance_cm: parseFloat(distCm),
+          sensor_status: sensorStatus,
+          is_priority: isPrio
+        })
+      });
+      await loadBins();
+    }
+
+    async function optimizeRoute() {
+      const res = await fetch('/api/routes/optimize', { method: 'POST' });
+      const data = await res.json();
+      lastRouteData = data;
+      const statsEl = document.getElementById('route-stats');
+
+      if (!data.ordered_stops || data.ordered_stops.length === 0) {
+        statsEl.innerHTML = `<div class="stats-box">${data.message}</div>`;
+        if (routeLayer) map.removeLayer(routeLayer);
+        document.getElementById('kpi-saved').innerText = '0%';
+        renderDriverApp(data);
+        return;
+      }
+
+      document.getElementById('kpi-saved').innerText = `-${data.saved_percent}%`;
+
+      const stopNames = data.ordered_stops.map((s, idx) => `${idx + 1}. ${s.id}`).join(' ➔ ');
+      statsEl.innerHTML = `
+        <div class="stats-box">
+          <b>📌 KẾT QUẢ LẬP TUYẾN (DIJKSTRA + TSP 2-OPT):</b><br>
+          • Quãng đường tuần tự (Chưa tối ưu): <b>${data.unoptimized_distance_m} m</b><br>
+          • Quãng đường Nearest Neighbor: <b>${data.nn_distance_m} m</b><br>
+          • Quãng đường NN + 2-Opt (Tối ưu): <b style="color:#1565c0;">${data.optimized_distance_m} m</b> (Tiết kiệm <b>${data.saved_percent}%</b>)<br>
+          • Thứ tự ghé thăm:<br><span style="color:#d32f2f; font-weight:700;">${stopNames}</span>
+        </div>
+      `;
+
+      // Vẽ đường đi thực tế bằng OSRM hoặc theo các nút giao lộ Dijkstra
+      const useOsrm = document.getElementById('chk-osrm').checked;
+      let polyCoords = data.graph_polyline;
+
+      if (useOsrm) {
+        try {
+          const coordStr = data.ordered_stops.map(s => `${s.lng},${s.lat}`).join(';');
+          const osrmRes = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson`);
+          const osrmJson = await osrmRes.json();
+          if (osrmJson.routes && osrmJson.routes.length > 0) {
+            polyCoords = osrmJson.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+          }
+        } catch (err) {
+          console.warn("OSRM fallback to local Dijkstra polyline");
+        }
+      }
+
+      if (routeLayer) map.removeLayer(routeLayer);
+      routeLayer = L.polyline(polyCoords, { color: '#1565c0', weight: 5, opacity: 0.9 }).addTo(map);
+      map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+
+      renderDriverApp(data);
+      updateRouteChart(data);
+    }
+
+    function renderDriverApp(data) {
+      const sumEl = document.getElementById('driver-route-summary');
+      const listEl = document.getElementById('driver-stops-list');
+      if (!data.legs || data.legs.length === 0) {
+        sumEl.innerHTML = '';
+        listEl.innerHTML = `<div style="text-align:center; padding:20px; color:#2e7d32; font-weight:700;">🎉 Tất cả các điểm cần thu gom trong chuyến đã hoàn tất!</div>`;
+        return;
+      }
+
+      sumEl.innerHTML = `
+        <div class="stats-box" style="margin-bottom:10px;">
+          <b>Tổng lộ trình tối ưu: ${data.optimized_distance_m} m</b> (Giảm ${data.saved_percent}%)<br>
+          Số chặng di chuyển: <b>${data.legs.length} chặng</b>
+        </div>
+      `;
+
+      listEl.innerHTML = data.legs.map(leg => {
+        const isDepot = (leg.to_id === 'DEPOT');
+        return `
+          <div class="stop-step-card" style="border-left-color:${isDepot ? '#2e7d32' : '#d32f2f'};">
+            <div style="font-size:13px; font-weight:700; color:#0f172a;">
+              Chặng ${leg.step}: ${leg.from_id} ➔ ${leg.to_id} (${leg.distance_m} m)
+            </div>
+            <div style="font-size:12px; color:#475569; margin-top:3px;">
+              📍 Điểm đến: <b>${leg.to_name}</b><br>
+              🛣️ Lộ trình Dijkstra: <code>${leg.via_nodes}</code>
+            </div>
+            ${!isDepot ? `
+              <div style="margin-top:8px;">
+                <button class="btn btn-collect" onclick="confirmStop('${leg.to_id}', 'COLLECTED')">✅ Đã thu gom</button>
+                <button class="btn btn-skip" onclick="openSkipModal('${leg.to_id}')">⚠️ Báo sự cố / Bỏ qua</button>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function updateFillChart(bins) {
+      const ctx = document.getElementById('fillChart').getContext('2d');
+      const labels = bins.map(b => b.bin_id);
+      const values = bins.map(b => b.fill_percent >= 0 ? b.fill_percent : 0);
+      const colors = bins.map(b => b.sensor_status !== 'OK' ? '#64748b' : (b.fill_percent >= 80 ? '#d32f2f' : (b.fill_percent >= 60 ? '#f57c00' : '#2e7d32')));
+
+      if (!fillChartInstance) {
+        fillChartInstance = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: labels,
+            datasets: [{ label: 'Mức đầy hiện tại (%)', data: values, backgroundColor: colors, borderRadius: 6 }]
+          },
+          options: { scales: { y: { beginAtZero: true, max: 100 } } }
+        });
+      } else {
+        fillChartInstance.data.datasets[0].data = values;
+        fillChartInstance.data.datasets[0].backgroundColor = colors;
+        fillChartInstance.update();
+      }
+    }
+
+    function updateRouteChart(data) {
+      const ctx = document.getElementById('routeChart').getContext('2d');
+      const vals = [data.unoptimized_distance_m, data.nn_distance_m, data.optimized_distance_m];
+      if (!routeChartInstance) {
+        routeChartInstance = new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: ['1. Tuần tự (Chưa tối ưu)', '2. Nearest Neighbor', '3. NN + 2-Opt (Đề xuất)'],
+            datasets: [{
+              label: 'Tổng quãng đường (m)',
+              data: vals,
+              backgroundColor: ['#94a3b8', '#f57c00', '#1565c0'],
+              borderRadius: 6
+            }]
+          },
+          options: { scales: { y: { beginAtZero: true } } }
+        });
+      } else {
+        routeChartInstance.data.datasets[0].data = vals;
+        routeChartInstance.update();
+      }
+    }
+
+    async function loadLogs() {
+      const res = await fetch('/api/logs');
+      const data = await res.json();
+      const tbody = document.getElementById('log-table-body');
+      tbody.innerHTML = data.telemetry_logs.map(l => `
+        <tr>
+          <td>${l.time_str}</td>
+          <td><code>${l.message_id}</code></td>
+          <td>${l.device_id}</td>
+          <td><b>${l.bin_id}</b></td>
+          <td>${l.distance_cm} cm</td>
+          <td><b>${l.fill_percent}%</b></td>
+          <td><span class="badge ${l.sensor_status === 'OK' ? 'NORMAL' : 'SENSOR_ERROR'}">${l.sensor_status}</span></td>
+        </tr>
+      `).join('');
+    }
+
+    async function confirmStop(binId, action, reason = "") {
+      await fetch('/api/routes/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bin_id: binId, action: action, reason: reason })
+      });
+      await loadBins();
+      if (lastRouteData) await optimizeRoute();
+    }
+
+    function openSkipModal(binId) {
+      currentSkipBinId = binId;
+      document.getElementById('modal-title').innerText = `⚠️ Bỏ qua điểm thu gom: ${binId}`;
+      document.getElementById('skip-modal').style.display = 'flex';
+      document.getElementById('skip-reason-input').focus();
+    }
+
+    function closeSkipModal() {
+      currentSkipBinId = null;
+      document.getElementById('skip-modal').style.display = 'none';
+    }
+
+    async function submitSkipReason() {
+      const binId = currentSkipBinId;
+      const reason = document.getElementById('skip-reason-input').value.trim() || "Đường bị phong tỏa";
+      closeSkipModal();
+      await confirmStop(binId, 'SKIPPED', reason);
+    }
+
+    async function resetTrip() {
+      await fetch('/api/routes/reset', { method: 'POST' });
+      if (routeLayer) map.removeLayer(routeLayer);
+      document.getElementById('route-stats').innerHTML = '';
+      lastRouteData = null; // Xoa lo trinh cu khi reset.
+      document.getElementById('driver-route-summary').innerHTML = '';
+      document.getElementById('driver-stops-list').innerHTML = 'Chua co lo trinh. Hay lap tuyen tai Tab 1.';
+      document.getElementById('kpi-saved').innerText = '0%';
+      await loadBins();
+    }
+
+    loadBins();
+    loadLogs();
+    setInterval(loadBins, 3000);
+    setInterval(loadLogs, 3000); // Cap nhat nhat ky IoT khi Wokwi dang chay
+  </script>
+</body>
+</html>
