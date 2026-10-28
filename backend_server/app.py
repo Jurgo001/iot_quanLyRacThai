@@ -215,6 +215,10 @@ def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_
     if data.device_id != registered_device:
         conn.close()
         raise HTTPException(status_code=403, detail="Device does not own this bin")
+    # P1-2: ESP32 telemetry may update only bins registered as actual ESP32 devices.
+    if not registered_device.startswith("ESP32_"):
+        conn.close()
+        raise HTTPException(status_code=403, detail="This bin is controlled by the Web simulator")
 
     c.execute("SELECT message_id FROM telemetry_logs WHERE message_id = ?", (data.message_id,))
     if c.fetchone():
@@ -255,10 +259,16 @@ def simulate_bin_node(req: SimulateBinInput, _authorized: None = Depends(require
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     now = time.time()
-    c.execute("SELECT 1 FROM bins WHERE bin_id = ?", (req.bin_id,))
-    if not c.fetchone():
+    # P1-2: Enforce source ownership in Backend, not just in the Web UI.
+    # BIN_01 belongs to ESP32_NODE_01; the simulator cannot overwrite it even with an admin key.
+    c.execute("SELECT device_id FROM bins WHERE bin_id = ?", (req.bin_id,))
+    registered = c.fetchone()
+    if not registered:
         conn.close()
         raise HTTPException(status_code=404, detail="Bin not found")
+    if not registered[0].startswith("SIM_NODE_"):
+        conn.close()
+        raise HTTPException(status_code=409, detail="This bin is controlled by Wokwi/ESP32; use the sensor")
     msg_id = f"SIM_{req.bin_id}_{int(now * 1000)}_{secrets.token_hex(4)}"
 
     if req.sensor_status != "OK" or req.distance_cm < 0:

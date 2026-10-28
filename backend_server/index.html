@@ -318,6 +318,20 @@
         }
 
         const sliderVal = b.distance_cm > 0 ? b.distance_cm : 50;
+        // P1-2: Only simulated bins have manual controls. Wokwi BIN_01 is read-only here.
+        const simControlsHtml = b.data_source === 'WOKWI'
+          ? `<div class="sim-slider-row" style="background:#e0f2fe; color:#075985;">
+               <span>📡 Wokwi ESP32 (chỉ đọc). Đổi khoảng cách tại cảm biến HC-SR04 trên Wokwi.</span>
+             </div>`
+          : `<div class="sim-slider-row">
+               <span>🎛️ Giả lập khoảng cách:</span>
+               <input type="range" min="20" max="100" value="${sliderVal}" style="flex:1;"
+                 onmousedown="isInteractingSlider=true"
+                 onmouseup="isInteractingSlider=false"
+                 onchange="simulateBin('${b.bin_id}', this.value, 'OK', ${b.is_priority})" />
+               <button class="btn" style="background:#e2e8f0; padding:3px 6px; font-size:10px;"
+                 onclick="simulateBin('${b.bin_id}', -1, 'SENSOR_ERROR', ${b.is_priority})">⚡ Báo lỗi CB</button>
+             </div>`;
 
         listEl.innerHTML += `
           <div class="bin-card">
@@ -329,16 +343,8 @@
               📏 Khoảng cách: <b>${b.distance_cm} cm</b> | 📊 Mức đầy: <b>${b.fill_percent}%</b> (Lần đo LT: ${b.consecutive_count})<br>
               ⏱️ Cập nhật: ${b.seconds_ago}s trước • Thiết bị: <code>${b.device_id}</code>
             </div>
-            <!-- Thanh trượt giả lập nhanh mức rác cho mọi thùng -->
-            <div class="sim-slider-row">
-              <span>🎛️ Giả lập khoảng cách:</span>
-              <input type="range" min="20" max="100" value="${sliderVal}" style="flex:1;"
-                onmousedown="isInteractingSlider=true"
-                onmouseup="isInteractingSlider=false"
-                onchange="simulateBin('${b.bin_id}', this.value, 'OK', ${b.is_priority})" />
-              <button class="btn" style="background:#e2e8f0; padding:3px 6px; font-size:10px;"
-                onclick="simulateBin('${b.bin_id}', -1, 'SENSOR_ERROR', ${b.is_priority})">⚡ Báo lỗi CB</button>
-            </div>
+            <!-- P1-2: Wokwi data is read-only here; simulated bins keep sliders. -->
+            ${simControlsHtml}
             ${tripStatusHtml}
             <div style="margin-top:6px;">
               <button class="btn btn-collect" onclick="confirmStop('${b.bin_id}', 'COLLECTED')">✅ Xác nhận đã thu gom</button>
@@ -399,6 +405,11 @@
 
     async function simulateBin(binId, distCm, sensorStatus, isPrio) {
       isInteractingSlider = false;
+      // P1-2: UX guard only. The Backend is the authoritative security boundary.
+      if (binId === 'BIN_01') {
+        window.alert('BIN_01 được cập nhật từ Wokwi, không chỉnh bằng Web.');
+        return;
+      }
       const authorized = await adminPost('/api/simulate/bin', {
           bin_id: binId,
           distance_cm: parseFloat(distCm),
