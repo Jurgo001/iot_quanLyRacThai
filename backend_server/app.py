@@ -225,14 +225,18 @@ def get_bins():
     now = time.time()
     result = []
     for r in rows:
-        is_offline = (r[0] == "BIN_01") and ((now - r[10]) > 60.0)
-        seconds_ago = int(now - r[10]) if r[0] == "BIN_01" else int(now % 12) + 1
+        # Khong tao thoi gian ao cho cac thung mo phong.
+        # BIN_01 la nut Wokwi; BIN_02..BIN_06 la cac nut do Web gia lap.
+        last_updated = r[10]
+        seconds_ago = max(0, int(now - last_updated)) if last_updated is not None else None
+        is_offline = (r[0] == "BIN_01") and (last_updated is None or seconds_ago > 60)
         result.append({
             "bin_id": r[0], "device_id": r[1], "name": r[2], "lat": r[3], "lng": r[4],
             "distance_cm": r[5], "fill_percent": r[6], "status": r[7],
             "sensor_status": "OFFLINE" if is_offline else r[8],
             "is_priority": bool(r[9]),
             "seconds_ago": seconds_ago,
+            "data_source": "WOKWI" if r[0] == "BIN_01" else "SIMULATED",
             "consecutive_count": r[11],
             "trip_info": stops.get(r[0], None)
         })
@@ -417,7 +421,7 @@ def reset_trip():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("DELETE FROM trip_stops")
-    c.execute("UPDATE bins SET last_updated = ?", (time.time(),))
+    # Reset chuyen khong duoc gia tao thoi gian cap nhat cam bien.
     conn.commit()
     conn.close()
     return {"status": "trip_reset"}
