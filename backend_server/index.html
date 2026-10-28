@@ -105,7 +105,7 @@
       <div class="kpi-val" style="color:#475569;" id="kpi-err">0</div>
     </div>
     <div class="kpi-card" style="border-left-color:#2e7d32;">
-      <div class="kpi-label">Tối ưu quãng đường (2-Opt)</div>
+      <div class="kpi-label">Giảm so với tuần tự (mô hình)</div>
       <div class="kpi-val" style="color:#2e7d32;" id="kpi-saved">0%</div>
     </div>
   </div>
@@ -132,7 +132,7 @@
         </label>
         <label style="cursor:pointer; font-weight:600;">
           <input type="checkbox" id="chk-osrm" checked onchange="optimizeRoute()" />
-          🛣️ Bám sát mặt đường thực tế (OSRM)
+          🛣️ Vẽ đường theo OSRM (tham khảo)
         </label>
       </div>
       <div id="map"></div>
@@ -222,6 +222,7 @@
     let currentSkipBinId = null;
     let isInteractingSlider = false;
     let lastRouteData = null;
+    let routeRequestId = 0; // P1-4: discard stale reroute responses
     let vehicleMarker = null; // P1-3 UI: vi tri xe MO PHONG, khong phai GPS
 
     let fillChartInstance = null;
@@ -453,56 +454,102 @@
     }
 
     async function optimizeRoute() {
-      const res = await fetch('/api/routes/optimize', { method: 'POST' });
-      const data = await res.json();
+      // P1-4: Ignore stale asynchronous OSRM results after rapid rerouting.
+      const requestId = ++routeRequestId;
+      const statsEl = document.getElementById('route-stats');
+      let data;
+      try {
+        const res = await fetch('/api/routes/optimize', { method: 'POST' });
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          throw new Error(errorData.detail || `HTTP ${res.status}`);
+        }
+        data = await res.json();
+      } catch (error) {
+        if (requestId !== routeRequestId) return;
+        statsEl.textContent = 'Không lập được tuyến: ' + error.message;
+        return;
+      }
+      if (requestId !== routeRequestId) return;
       lastRouteData = data;
       updateVehicleMarker(data);
-      const statsEl = document.getElementById('route-stats');
 
       if (!data.ordered_stops || data.ordered_stops.length === 0) {
-        statsEl.innerHTML = `<div class="stats-box">${data.message}</div>`;
-        if (routeLayer) map.removeLayer(routeLayer);
+        statsEl.textContent = data.message || 'Không còn thùng cần thu gom.';
+        if (routeLayer) {
+          map.removeLayer(routeLayer);
+          routeLayer = null;
+        }
         document.getElementById('kpi-saved').innerText = '0%';
         renderDriverApp(data);
         return;
       }
 
-      document.getElementById('kpi-saved').innerText = `-${data.saved_percent}%`;
+      // All three comparisons below use the SAME modeled Dijkstra cost matrix.
+      document.getElementById('kpi-saved').innerText = `${data.saved_percent}%`;
+      const stopNames = data.ordered_stops.map((s, idx) => `${idx + 1}. ${escapeHtml(s.id)}`).join(' ➔ ');
+      const graphAudit = data.graph_audit || {};
+      const missingReverse = Array.isArray(graphAudit.missing_reverse_edges) ? graphAudit.missing_reverse_edges : [];
+      const unequalReverse = Array.isArray(graphAudit.different_reverse_weights) ? graphAudit.different_reverse_weights : [];
+      const modelWarning = (missingReverse.length || unequalReverse.length)
+        ? `⚠️ Đồ thị hiện có ${missingReverse.length} cung thiếu chiều ngược và ${unequalReverse.length} cặp có trọng số hai chiều khác nhau; cần đối chiếu quy định đường một chiều hoặc dữ liệu nhập.`
+        : 'Các cung hai chiều có trọng số phù hợp trong mô hình hiện tại.';
 
-      const stopNames = data.ordered_stops.map((s, idx) => `${idx + 1}. ${s.id}`).join(' ➔ ');
-      statsEl.innerHTML = `
-        <div class="stats-box">
-          <b>📌 KẾT QUẢ LẬP TUYẾN (DIJKSTRA + TSP 2-OPT):</b><br>
-          • 🧭 Vị trí xe (mô phỏng, không phải GPS): <b>${escapeHtml(data.current_location_name)} (${data.current_location_id})</b><br>
-          • Số thùng còn lại: <b>${data.remaining_bins}</b>${data.return_only ? ' • Chỉ còn chặng về DEPOT' : ''}<br>
-          • Quãng đường tuần tự (Chưa tối ưu): <b>${data.unoptimized_distance_m} m</b><br>
-          • Quãng đường Nearest Neighbor: <b>${data.nn_distance_m} m</b><br>
-          • Quãng đường NN + 2-Opt (Tối ưu): <b style="color:#1565c0;">${data.optimized_distance_m} m</b> (Tiết kiệm <b>${data.saved_percent}%</b>)<br>
-          • Thứ tự ghé thăm:<br><span style="color:#d32f2f; font-weight:700;">${stopNames}</span>
-        </div>
-      `;
-
-      // Vẽ đường đi thực tế bằng OSRM hoặc theo các nút giao lộ Dijkstra
+      // The geometry and the model cost are intentionally separate.
       const useOsrm = document.getElementById('chk-osrm').checked;
       let polyCoords = data.graph_polyline;
-
-      if (useOsrm) {
+      let osrmMetricInfo = useOsrm
+        ? 'OSRM: chưa có kết quả, đang dùng đường mô hình.'
+        : 'Đang hiển thị đường mô hình Dijkstra; chưa truy vấn OSRM.';
+      let routeSource = 'MODEL_GRAPH';
+      if (useOsrm && data.ordered_stops.length >= 2) {
         try {
           const coordStr = data.ordered_stops.map(s => `${s.lng},${s.lat}`).join(';');
           const osrmRes = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson`);
+          if (!osrmRes.ok) throw new Error(`OSRM HTTP ${osrmRes.status}`);
           const osrmJson = await osrmRes.json();
-          if (osrmJson.routes && osrmJson.routes.length > 0) {
-            polyCoords = osrmJson.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+          const osrmRoute = osrmJson.routes && osrmJson.routes[0];
+          if (osrmJson.code !== 'Ok' || !osrmRoute || !osrmRoute.geometry ||
+              !Array.isArray(osrmRoute.geometry.coordinates) || osrmRoute.geometry.coordinates.length < 2 ||
+              !Number.isFinite(osrmRoute.distance)) {
+            throw new Error('OSRM khong co tuyen hop le');
           }
-        } catch (err) {
-          console.warn("OSRM fallback to local Dijkstra polyline");
+          polyCoords = osrmRoute.geometry.coordinates.map(c => [c[1], c[0]]);
+          routeSource = 'OSRM';
+          osrmMetricInfo = `Đường vẽ theo OSRM: <b>${Math.round(osrmRoute.distance).toLocaleString('vi-VN')} m</b> (tham khảo mạng đường; KHÔNG dùng để tính % giảm của mô hình).`;
+        } catch (error) {
+          console.warn('OSRM unavailable, use modeled graph polyline', error);
+          osrmMetricInfo = 'OSRM không khả dụng: dùng đường nối các nút mô hình. Không có số đo đường thực tế.';
         }
       }
-
+      if (requestId !== routeRequestId) return;
+      const modelDistance = v => Number(v).toLocaleString('vi-VN');
+      statsEl.innerHTML = `
+        <div class="stats-box">
+          <b>📌 KẾT QUẢ LẬP TUYẾN (DIJKSTRA + NN + 2-OPT)</b><br>
+          • 🧭 Vị trí xe mô phỏng (không phải GPS): <b>${escapeHtml(data.current_location_name)} (${escapeHtml(data.current_location_id)})</b><br>
+          • Số thùng còn lại: <b>${data.remaining_bins}</b>${data.return_only ? ' • Chỉ còn chặng về DEPOT' : ''}<br>
+          • <b>SỐ LIỆU TRÊN ĐỒ THỊ CỤC BỘ (ước tính):</b><br>
+          • Tuyến theo thứ tự đầu vào: <b>${modelDistance(data.unoptimized_distance_m)} m</b><br>
+          • Nearest Neighbor: <b>${modelDistance(data.nn_distance_m)} m</b><br>
+          • NN + 2-opt: <b style="color:#1565c0;">${modelDistance(data.optimized_distance_m)} m</b><br>
+          • Giảm so với thứ tự đầu vào: <b>${data.saved_percent}%</b> (không phải tỷ lệ tiết kiệm thực tế; 2-opt không đảm bảo tối ưu toàn cục).<br>
+          • <b>ĐƯỜNG HIỂN THỊ:</b> <span id="route-osrm-metric">${osrmMetricInfo}</span><br>
+          • <span style="font-size:11px;color:#475569;">${modelWarning}</span><br>
+          • Thứ tự ghé thăm:<br><span style="color:#d32f2f;font-weight:700;">${stopNames}</span>
+        </div>
+      `;
       if (routeLayer) map.removeLayer(routeLayer);
-      routeLayer = L.polyline(polyCoords, { color: '#1565c0', weight: 5, opacity: 0.9 }).addTo(map);
-      map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
-
+      if (Array.isArray(polyCoords) && polyCoords.length >= 2) {
+        routeLayer = L.polyline(polyCoords, {
+          color: routeSource === 'OSRM' ? '#1565c0' : '#0d9488',
+          weight: 5, opacity: 0.9,
+          dashArray: routeSource === 'OSRM' ? null : '8, 7'
+        }).addTo(map);
+        map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+      } else {
+        routeLayer = null;
+      }
       renderDriverApp(data);
       updateRouteChart(data);
     }
@@ -520,7 +567,7 @@
         <div class="stats-box" style="margin-bottom:10px;">
           <b>Điểm xuất phát hiện tại: ${escapeHtml(data.current_location_name)} (${data.current_location_id})</b><br>
           <span style="font-size:11px; color:#64748b;">Vị trí suy ra từ xác nhận thu gom, chưa tích hợp GPS.</span><br>
-          <b>Quãng đường còn lại: ${data.optimized_distance_m} m</b> (Giảm ${data.saved_percent}%)<br>
+          <b>Quãng đường còn lại trên đồ thị mô hình: ${data.optimized_distance_m} m</b> (Giảm ${data.saved_percent}% so với thứ tự đầu vào)<br>
           Số chặng di chuyển: <b>${data.legs.length} chặng</b>
         </div>
       `;
@@ -576,9 +623,9 @@
         routeChartInstance = new Chart(ctx, {
           type: 'bar',
           data: {
-            labels: ['1. Tuần tự (Chưa tối ưu)', '2. Nearest Neighbor', '3. NN + 2-Opt (Đề xuất)'],
+            labels: ['1. Thứ tự đầu vào', '2. Nearest Neighbor', '3. NN + 2-Opt'],
             datasets: [{
-              label: 'Tổng quãng đường (m)',
+              label: 'Quãng đường trên đồ thị mô hình (m)',
               data: vals,
               backgroundColor: ['#94a3b8', '#f57c00', '#1565c0'],
               borderRadius: 6
@@ -643,6 +690,7 @@
       if (routeLayer) map.removeLayer(routeLayer);
       document.getElementById('route-stats').innerHTML = '';
       lastRouteData = null; // Xoa lo trinh cu khi reset.
+      ++routeRequestId; // Any pending OSRM response is now stale.
       if (vehicleMarker) {
         map.removeLayer(vehicleMarker);
         vehicleMarker = null;

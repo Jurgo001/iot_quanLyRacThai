@@ -81,6 +81,30 @@ LOCAL_GRAPH = {
     "BIN_06": {"INT_04": 230, "BIN_05": 510, "BIN_01": 540}
 }
 
+# P1-4: This is a HAND-MODELED DIRECTED weighted graph, not OSRM road data.
+# Do not silently add reverse edges: one-way vs missing edges needs field review.
+def audit_local_graph(graph):
+    missing_reverse = []
+    different_weights = []
+    for source, neighbors in graph.items():
+        if source not in GRAPH_NODES:
+            raise ValueError(f"Unknown graph node: {source}")
+        for target, weight in neighbors.items():
+            if target not in GRAPH_NODES or target not in graph:
+                raise ValueError(f"Unknown graph target: {source}->{target}")
+            if not isinstance(weight, (int, float)) or not math.isfinite(weight) or weight <= 0:
+                raise ValueError(f"Invalid positive Dijkstra weight: {source}->{target}: {weight}")
+            reverse = graph[target].get(source)
+            if reverse is None:
+                missing_reverse.append(f"{source}->{target}")
+            elif reverse != weight:
+                different_weights.append(f"{source}<->{target}")
+    return {
+        "missing_reverse_edges": sorted(missing_reverse),
+        "different_reverse_weights": sorted(set(different_weights)),
+    }
+
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -447,7 +471,17 @@ def optimize_route():
         return {"message": "Không còn thùng cần thu gom; xe đang ở DEPOT.",
                 "ordered_stops": [], "legs": [], "current_location_id": "DEPOT",
                 "current_location_name": start_node["name"], "remaining_bins": 0,
-                "return_only": False, "location_source": "SIMULATED_FROM_CONFIRMATIONS"}
+                "return_only": False, "location_source": "SIMULATED_FROM_CONFIRMATIONS",
+                "distance_source": "LOCAL_DIRECTED_WEIGHTED_GRAPH",
+                "comparison_baseline": "SEQUENTIAL_SELECTED_ORDER",
+                "graph_audit": audit_local_graph(LOCAL_GRAPH)}
+
+    # Validate the hand-entered graph before reporting model-distance metrics.
+    try:
+        graph_audit = audit_local_graph(LOCAL_GRAPH)
+    except ValueError as exc:
+        conn.close()
+        raise HTTPException(status_code=500, detail=f"Invalid local graph: {exc}") from exc
 
     # Start at the current confirmed position, visit all remaining bins,
     # and FINISH at DEPOT. Never include a trip back to the start bin.
@@ -495,12 +529,17 @@ def optimize_route():
         "current_location_id": start_id,
         "current_location_name": start_node["name"],
         "location_source": "SIMULATED_FROM_CONFIRMATIONS",
+        "distance_source": "LOCAL_DIRECTED_WEIGHTED_GRAPH",
+        "comparison_baseline": "SEQUENTIAL_SELECTED_ORDER",
+        "graph_audit": graph_audit,
         "remaining_bins": len(selected),
         "return_only": len(selected) == 0,
         "message": "Đã thu gom tất cả thùng trong chuyến; xe cần về DEPOT." if not selected else "",
         "unoptimized_distance_m": unoptimized_cost,
         "nn_distance_m": nn_cost,
         "optimized_distance_m": optimized_cost,
+        # This percent compares ONE local-graph sequential baseline,
+        # not OSRM and not a proven globally optimal real-world route.
         "saved_percent": round((1 - optimized_cost / unoptimized_cost) * 100, 1) if unoptimized_cost > 0 else 0,
         "ordered_stops": ordered_nodes,
         "legs": legs,
