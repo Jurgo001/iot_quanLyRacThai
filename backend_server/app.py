@@ -372,35 +372,42 @@ def calc_tour_cost(tour, cost_matrix):
 
 # Thuật toán TSP: Nearest Neighbor + 2-opt
 def solve_tsp_nn_and_2opt(nodes, cost_matrix):
+    """Fixed start (index 0), fixed DEPOT finish (last index).
+
+    Optimize only unvisited bins. 2-opt never moves either endpoint.
+    Cost is recomputed on the full directed Dijkstra matrix after reversal.
+    """
     n = len(nodes)
-    unvisited = set(range(1, n))
+    if n < 2:
+        raise ValueError("Route needs both start and DEPOT finish")
+    finish = n - 1
+    unvisited = set(range(1, finish))
     nn_tour = [0]
     curr = 0
     while unvisited:
-        next_node = min(unvisited, key=lambda x: cost_matrix[curr][x])
+        next_node = min(unvisited, key=lambda j: (cost_matrix[curr][j], nodes[j]["id"]))
         nn_tour.append(next_node)
         unvisited.remove(next_node)
         curr = next_node
-    nn_tour.append(0)
+    nn_tour.append(finish)
 
     def run_2opt(tour):
         best = tour[:]
         improved = True
         while improved:
             improved = False
-            for i in range(1, n - 1):
-                for j in range(i + 1, n):
-                    new_tour = best[:i] + best[i:j + 1][::-1] + best[j + 1:]
-                    if calc_tour_cost(new_tour, cost_matrix) < calc_tour_cost(best, cost_matrix):
-                        best = new_tour
+            for i in range(1, n - 2):
+                for j in range(i + 1, n - 1):
+                    candidate = best[:i] + best[i:j + 1][::-1] + best[j + 1:]
+                    if calc_tour_cost(candidate, cost_matrix) < calc_tour_cost(best, cost_matrix):
+                        best = candidate
                         improved = True
         return best
 
     best_2opt = run_2opt(nn_tour)
-    seq_2opt = run_2opt(list(range(n)) + [0])
-    if calc_tour_cost(seq_2opt, cost_matrix) < calc_tour_cost(best_2opt, cost_matrix):
-        best_2opt = seq_2opt
-
+    sequential_2opt = run_2opt(list(range(n)))
+    if calc_tour_cost(sequential_2opt, cost_matrix) < calc_tour_cost(best_2opt, cost_matrix):
+        best_2opt = sequential_2opt
     return nn_tour, best_2opt
 
 # 5. API Lập tuyến thu gom tối ưu
@@ -413,35 +420,54 @@ def optimize_route():
     c.execute("SELECT bin_id, action_status FROM trip_stops")
     completed_or_skipped = {r[0]: r[1] for r in c.fetchall()}
 
+    # P1-3: No live GPS exists in this mock app. Use the most recently CONFIRMED
+    # COLLECTED location as a simulated vehicle position. A skipped stop does NOT
+    # move the truck, because it may have been skipped without driving there.
+    c.execute("""SELECT bin_id FROM trip_stops WHERE action_status = 'COLLECTED'
+                 ORDER BY updated_at DESC, rowid DESC LIMIT 1""")
+    last_collected = c.fetchone()
+    start_id = last_collected[0] if last_collected else "DEPOT"
+    if start_id not in GRAPH_NODES:
+        conn.close()
+        raise HTTPException(status_code=409, detail="Unknown last collected location; reset trip")
+    start_node = {"id": start_id, "name": GRAPH_NODES[start_id]["name"],
+                  "lat": GRAPH_NODES[start_id]["lat"], "lng": GRAPH_NODES[start_id]["lng"]}
+
     selected = []
     for b in all_bins:
         bid, name, lat, lng, fill, status, prio = b
         if bid in completed_or_skipped:
             continue
         if status == "NEED_COLLECTION" or prio == 1:
-            selected.append({"id": bid, "name": name, "lat": lat, "lng": lng, "fill": fill, "is_priority": bool(prio)})
+            selected.append({"id": bid, "name": name, "lat": lat, "lng": lng,
+                             "fill": fill, "is_priority": bool(prio)})
 
-    if not selected:
+    if not selected and start_id == "DEPOT":
         conn.close()
-        return {"message": "Không có thùng rác nào vượt ngưỡng cần thu gom!", "ordered_stops": []}
+        return {"message": "Không còn thùng cần thu gom; xe đang ở DEPOT.",
+                "ordered_stops": [], "legs": [], "current_location_id": "DEPOT",
+                "current_location_name": start_node["name"], "remaining_bins": 0,
+                "return_only": False, "location_source": "SIMULATED_FROM_CONFIRMATIONS"}
 
-    nodes = [DEPOT] + selected
+    # Start at the current confirmed position, visit all remaining bins,
+    # and FINISH at DEPOT. Never include a trip back to the start bin.
+    nodes = [start_node] + selected + [dict(DEPOT)]
     n = len(nodes)
-
     cost_matrix = [[0.0] * n for _ in range(n)]
     path_details = {}
     for i in range(n):
         for j in range(n):
             if i != j:
                 cost, sub_path = dijkstra_shortest_path(LOCAL_GRAPH, nodes[i]["id"], nodes[j]["id"])
+                if not math.isfinite(cost) or not sub_path:
+                    conn.close()
+                    raise HTTPException(status_code=409,
+                                        detail=f"No graph path: {nodes[i]['id']} to {nodes[j]['id']}")
                 cost_matrix[i][j] = cost
                 path_details[(nodes[i]["id"], nodes[j]["id"])] = sub_path
 
-    # Quãng đường tuần tự chưa tối ưu
-    unoptimized_order = list(range(n)) + [0]
+    unoptimized_order = list(range(n))
     unoptimized_cost = calc_tour_cost(unoptimized_order, cost_matrix)
-
-    # Quãng đường Nearest Neighbor và Nearest Neighbor + 2-opt
     nn_tour, best_tour_indices = solve_tsp_nn_and_2opt(nodes, cost_matrix)
     nn_cost = calc_tour_cost(nn_tour, cost_matrix)
     optimized_cost = calc_tour_cost(best_tour_indices, cost_matrix)
@@ -449,31 +475,29 @@ def optimize_route():
     ordered_nodes = []
     full_graph_polyline = []
     legs = []
-
-    for k in range(len(best_tour_indices)):
-        idx = best_tour_indices[k]
+    for k, idx in enumerate(best_tour_indices):
         node_info = dict(nodes[idx])
         if k > 0:
             prev_id = nodes[best_tour_indices[k - 1]]["id"]
             curr_id = node_info["id"]
             leg_cost = cost_matrix[best_tour_indices[k - 1]][idx]
-            sub_nodes = path_details.get((prev_id, curr_id), [prev_id, curr_id])
-            legs.append({
-                "step": k,
-                "from_id": prev_id,
-                "to_id": curr_id,
-                "to_name": node_info["name"],
-                "distance_m": leg_cost,
-                "via_nodes": " ➔ ".join(sub_nodes)
-            })
+            sub_nodes = path_details[(prev_id, curr_id)]
+            legs.append({"step": k, "from_id": prev_id, "to_id": curr_id,
+                         "to_name": node_info["name"], "distance_m": leg_cost,
+                         "via_nodes": " ➔ ".join(sub_nodes)})
             for sn in sub_nodes:
                 coord = [GRAPH_NODES[sn]["lat"], GRAPH_NODES[sn]["lng"]]
                 if not full_graph_polyline or full_graph_polyline[-1] != coord:
                     full_graph_polyline.append(coord)
         ordered_nodes.append(node_info)
-
     conn.close()
     return {
+        "current_location_id": start_id,
+        "current_location_name": start_node["name"],
+        "location_source": "SIMULATED_FROM_CONFIRMATIONS",
+        "remaining_bins": len(selected),
+        "return_only": len(selected) == 0,
+        "message": "Đã thu gom tất cả thùng trong chuyến; xe cần về DEPOT." if not selected else "",
         "unoptimized_distance_m": unoptimized_cost,
         "nn_distance_m": nn_cost,
         "optimized_distance_m": optimized_cost,

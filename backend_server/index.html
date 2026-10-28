@@ -143,7 +143,7 @@
   <div id="tab-driver" class="tab-panel">
     <div class="mobile-wrapper">
       <div class="phone-mockup">
-        <div class="phone-notch">📶 5G • GPS Đang Bật • 100% 🔋</div>
+        <div class="phone-notch">📶 5G • Vị trí mô phỏng • 100% 🔋</div>
         <div class="phone-header">
           <div style="font-size:15px; font-weight:700;">🚛 ỨNG DỤNG TÀI XẾ THU GOM</div>
           <div style="font-size:12px; opacity:0.9;">Phương tiện: Xe thu gom #01 - Khu vực Tân Phú</div>
@@ -222,6 +222,7 @@
     let currentSkipBinId = null;
     let isInteractingSlider = false;
     let lastRouteData = null;
+    let vehicleMarker = null; // P1-3 UI: vi tri xe MO PHONG, khong phai GPS
 
     let fillChartInstance = null;
     let routeChartInstance = null;
@@ -269,6 +270,36 @@
           graphLayerGroup.addLayer(m);
         }
       });
+    }
+
+    // P1-3 UI: Chi dich chuyen xe khi da co xac nhan COLLECTED trong DB.
+    // Khong phai GPS hay vi tri thoi gian thuc. Ghim DEPOT mau xanh giu nguyen.
+    function updateVehicleMarker(data) {
+      const stops = data && Array.isArray(data.ordered_stops) ? data.ordered_stops : [];
+      const current = stops.find(s => s.id === data.current_location_id);
+      if (!current || !Number.isFinite(Number(current.lat)) || !Number.isFinite(Number(current.lng))) {
+        if (vehicleMarker) {
+          map.removeLayer(vehicleMarker);
+          vehicleMarker = null;
+        }
+        return;
+      }
+
+      const coords = [Number(current.lat), Number(current.lng)];
+      const name = escapeHtml(data.current_location_name || data.current_location_id || '');
+      if (!vehicleMarker) {
+        const truckIcon = L.divIcon({
+          className: '',
+          html: '<div style="width:34px;height:34px;display:flex;align-items:center;justify-content:center;background:#17b890;border:3px solid white;border-radius:50%;box-shadow:0 2px 8px #334155a6;font-size:19px;">🚚</div>',
+          iconSize: [34, 34],
+          iconAnchor: [17, 17]
+        });
+        vehicleMarker = L.marker(coords, { icon: truckIcon, zIndexOffset: 1000 }).addTo(map);
+      } else {
+        vehicleMarker.setLatLng(coords);
+      }
+      vehicleMarker.bindPopup('<b>🚚 Xe thu gom (MÔ PHỎNG)</b><br>Đang ở: ' + name + '<br><small>Chỉ thay đổi khi tài xế xác nhận đã thu gom. Không phải GPS.</small>');
+      vehicleMarker.bindTooltip('🚚 Vị trí xe mô phỏng', {direction: 'top', offset: [0, -16]});
     }
 
     async function loadBins() {
@@ -346,6 +377,7 @@
             <!-- P1-2: Wokwi data is read-only here; simulated bins keep sliders. -->
             ${simControlsHtml}
             ${tripStatusHtml}
+            <div style="margin-top:6px; font-size:11px; color:#64748b;">Chỉ xác nhận đã thu gom khi xe thực sự tới thùng (vị trí mô phỏng sẽ chuyển tới đây).</div>
             <div style="margin-top:6px;">
               <button class="btn btn-collect" onclick="confirmStop('${b.bin_id}', 'COLLECTED')">✅ Xác nhận đã thu gom</button>
               <button class="btn btn-skip" onclick="openSkipModal('${b.bin_id}')">⚠️ Bỏ qua điểm này</button>
@@ -424,6 +456,7 @@
       const res = await fetch('/api/routes/optimize', { method: 'POST' });
       const data = await res.json();
       lastRouteData = data;
+      updateVehicleMarker(data);
       const statsEl = document.getElementById('route-stats');
 
       if (!data.ordered_stops || data.ordered_stops.length === 0) {
@@ -440,6 +473,8 @@
       statsEl.innerHTML = `
         <div class="stats-box">
           <b>📌 KẾT QUẢ LẬP TUYẾN (DIJKSTRA + TSP 2-OPT):</b><br>
+          • 🧭 Vị trí xe (mô phỏng, không phải GPS): <b>${escapeHtml(data.current_location_name)} (${data.current_location_id})</b><br>
+          • Số thùng còn lại: <b>${data.remaining_bins}</b>${data.return_only ? ' • Chỉ còn chặng về DEPOT' : ''}<br>
           • Quãng đường tuần tự (Chưa tối ưu): <b>${data.unoptimized_distance_m} m</b><br>
           • Quãng đường Nearest Neighbor: <b>${data.nn_distance_m} m</b><br>
           • Quãng đường NN + 2-Opt (Tối ưu): <b style="color:#1565c0;">${data.optimized_distance_m} m</b> (Tiết kiệm <b>${data.saved_percent}%</b>)<br>
@@ -483,7 +518,9 @@
 
       sumEl.innerHTML = `
         <div class="stats-box" style="margin-bottom:10px;">
-          <b>Tổng lộ trình tối ưu: ${data.optimized_distance_m} m</b> (Giảm ${data.saved_percent}%)<br>
+          <b>Điểm xuất phát hiện tại: ${escapeHtml(data.current_location_name)} (${data.current_location_id})</b><br>
+          <span style="font-size:11px; color:#64748b;">Vị trí suy ra từ xác nhận thu gom, chưa tích hợp GPS.</span><br>
+          <b>Quãng đường còn lại: ${data.optimized_distance_m} m</b> (Giảm ${data.saved_percent}%)<br>
           Số chặng di chuyển: <b>${data.legs.length} chặng</b>
         </div>
       `;
@@ -578,7 +615,7 @@
       });
       if (!authorized) return;
       await loadBins();
-      if (lastRouteData) await optimizeRoute();
+      await optimizeRoute();
     }
 
     function openSkipModal(binId) {
@@ -606,6 +643,10 @@
       if (routeLayer) map.removeLayer(routeLayer);
       document.getElementById('route-stats').innerHTML = '';
       lastRouteData = null; // Xoa lo trinh cu khi reset.
+      if (vehicleMarker) {
+        map.removeLayer(vehicleMarker);
+        vehicleMarker = null;
+      }
       document.getElementById('driver-route-summary').innerHTML = '';
       document.getElementById('driver-stops-list').innerHTML = 'Chua co lo trinh. Hay lap tuyen tai Tab 1.';
       document.getElementById('kpi-saved').innerText = '0%';
