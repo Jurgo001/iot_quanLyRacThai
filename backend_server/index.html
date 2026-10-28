@@ -313,7 +313,7 @@
         let tripStatusHtml = '';
         if (b.trip_info) {
           tripStatusHtml = `<div style="margin-top:5px; color:#1565c0; font-weight:700; font-size:12px;">
-            ✔ Chuyến đi: ${b.trip_info.action_status} ${b.trip_info.skip_reason ? '(' + b.trip_info.skip_reason + ')' : ''}
+            ✔ Chuyến đi: ${b.trip_info.action_status} ${b.trip_info.skip_reason ? '(' + escapeHtml(b.trip_info.skip_reason) + ')' : ''}
           </div>`;
         }
 
@@ -356,18 +356,56 @@
       updateFillChart(data.bins);
     }
 
+    // P1-1: Never interpret driver-provided text as HTML.
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    // P1-1: Admin key stays in page memory only (not embedded or stored in browser storage).
+    let adminApiKey = null;
+    async function adminPost(url, body = undefined) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (!adminApiKey) {
+          const typed = window.prompt('Nhap khoa quan tri P1 (xem backend_server/p1_local_keys.json):');
+          if (!typed || !typed.trim()) return false;
+          adminApiKey = typed.trim();
+        }
+        const headers = {'X-API-Key': adminApiKey};
+        const options = {method: 'POST', headers};
+        if (body !== undefined) {
+          headers['Content-Type'] = 'application/json';
+          options.body = JSON.stringify(body);
+        }
+        try {
+          const response = await fetch(url, options);
+          if (response.status === 401) {
+            adminApiKey = null;
+            window.alert('Khoa quan tri khong dung. Vui long nhap lai.');
+            continue;
+          }
+          if (!response.ok) {
+            const info = await response.text();
+            window.alert(`Loi API ${response.status}: ${info.slice(0, 350)}`);
+            return false;
+          }
+          return true;
+        } catch (error) {
+          window.alert('Khong ket noi duoc Backend: ' + error.message);
+          return false;
+        }
+      }
+      return false;
+    }
+
     async function simulateBin(binId, distCm, sensorStatus, isPrio) {
       isInteractingSlider = false;
-      await fetch('/api/simulate/bin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const authorized = await adminPost('/api/simulate/bin', {
           bin_id: binId,
           distance_cm: parseFloat(distCm),
           sensor_status: sensorStatus,
           is_priority: isPrio
-        })
       });
+      if (!authorized) return;
       await loadBins();
     }
 
@@ -524,11 +562,10 @@
     }
 
     async function confirmStop(binId, action, reason = "") {
-      await fetch('/api/routes/confirm', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bin_id: binId, action: action, reason: reason })
+      const authorized = await adminPost('/api/routes/confirm', {
+        bin_id: binId, action: action, reason: reason
       });
+      if (!authorized) return;
       await loadBins();
       if (lastRouteData) await optimizeRoute();
     }
@@ -553,7 +590,8 @@
     }
 
     async function resetTrip() {
-      await fetch('/api/routes/reset', { method: 'POST' });
+      const authorized = await adminPost('/api/routes/reset');
+      if (!authorized) return;
       if (routeLayer) map.removeLayer(routeLayer);
       document.getElementById('route-stats').innerHTML = '';
       lastRouteData = null; // Xoa lo trinh cu khi reset.

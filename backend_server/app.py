@@ -2,25 +2,51 @@ import os
 import time
 import math
 import heapq
+import json
+import secrets
 import sqlite3
-from typing import List, Optional
-from fastapi import FastAPI, HTTPException
+from typing import List, Optional, Literal
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ConfigDict, StrictBool, model_validator
 
 app = FastAPI(title="Hệ Thống Quản Lý Rác Thải Thông Minh - Nhóm 15 HUIT")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "smart_waste.db")
 HTML_FILE = os.path.join(BASE_DIR, "index.html")
+
+# P1-1: Demo-only keys generated on this PC, never commit this JSON to Git.
+LOCAL_KEYS_FILE = os.path.join(BASE_DIR, "p1_local_keys.json")
+try:
+    with open(LOCAL_KEYS_FILE, "r", encoding="utf-8") as _f:
+        _local_keys = json.load(_f)
+except (FileNotFoundError, ValueError) as _exc:
+    raise RuntimeError("P1-1: Missing/invalid backend_server/p1_local_keys.json. Run apply_p1_1.py first.") from _exc
+
+DEVICE_API_KEY = _local_keys.get("device_api_key", "")
+ADMIN_API_KEY = _local_keys.get("admin_api_key", "")
+if not isinstance(DEVICE_API_KEY, str) or not isinstance(ADMIN_API_KEY, str) or min(len(DEVICE_API_KEY), len(ADMIN_API_KEY)) < 32:
+    raise RuntimeError("P1-1: Invalid local API keys; both must have at least 32 characters.")
+
+
+def require_device_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    if not x_api_key or not secrets.compare_digest(x_api_key, DEVICE_API_KEY):
+        raise HTTPException(status_code=401, detail="Device API key missing or invalid")
+
+
+def require_admin_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
+    if not x_api_key or not secrets.compare_digest(x_api_key, ADMIN_API_KEY):
+        raise HTTPException(status_code=401, detail="Admin API key missing or invalid")
+
 
 # Điểm tập kết xe rác (Depot): Cổng chính ĐH Công Thương TP.HCM (140 Lê Trọng Tấn)
 DEPOT = {"id": "DEPOT", "name": "Trạm Xe Thu Gom (ĐH Công Thương)", "lat": 10.8061, "lng": 106.6286}
@@ -107,26 +133,60 @@ def init_db():
 
 init_db()
 
+# P1-1: Reject malformed or inconsistent telemetry BEFORE writing to SQLite.
 class TelemetryInput(BaseModel):
-    device_id: str
-    bin_id: str
-    message_id: str
-    measured_at: int
-    distance_cm: float
-    fill_percent: float
-    sensor_status: str
-    is_priority: Optional[bool] = False
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    device_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
+    bin_id: str = Field(pattern=r"^BIN_0[1-6]$")
+    message_id: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.-]+$")
+    measured_at: int = Field(ge=0)  # ESP32 uptime seconds, NOT Unix timestamp.
+    distance_cm: float = Field(allow_inf_nan=False)
+    fill_percent: float = Field(allow_inf_nan=False)
+    sensor_status: Literal["OK", "SENSOR_ERROR"]
+    is_priority: StrictBool = False
+
+    @model_validator(mode="after")
+    def ensure_consistency(self):
+        if self.sensor_status == "SENSOR_ERROR":
+            if self.distance_cm != -1.0 or self.fill_percent != -1.0:
+                raise ValueError("SENSOR_ERROR requires distance_cm=-1 and fill_percent=-1")
+        else:
+            if not 2.0 <= self.distance_cm <= 400.0 or not 0.0 <= self.fill_percent <= 100.0:
+                raise ValueError("OK requires distance 2..400 cm and fill 0..100%")
+            expected = round(max(0.0, min(100.0, (100.0-self.distance_cm)*100.0/80.0)), 1)
+            if abs(self.fill_percent-expected) > 0.25:
+                raise ValueError(f"fill_percent inconsistent with distance_cm; expected ~{expected}%")
+        return self
+
 
 class SimulateBinInput(BaseModel):
-    bin_id: str
-    distance_cm: float
-    sensor_status: Optional[str] = "OK"
-    is_priority: Optional[bool] = False
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    bin_id: str = Field(pattern=r"^BIN_0[1-6]$")
+    distance_cm: float = Field(allow_inf_nan=False)
+    sensor_status: Literal["OK", "SENSOR_ERROR"] = "OK"
+    is_priority: StrictBool = False
+
+    @model_validator(mode="after")
+    def validate_sim(self):
+        if self.sensor_status == "SENSOR_ERROR":
+            if self.distance_cm != -1.0:
+                raise ValueError("SENSOR_ERROR requires distance_cm=-1")
+        elif not 2.0 <= self.distance_cm <= 400.0:
+            raise ValueError("distance_cm must be 2..400 when sensor is OK")
+        return self
+
 
 class ConfirmInput(BaseModel):
-    bin_id: str
-    action: str
-    reason: Optional[str] = ""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    bin_id: str = Field(pattern=r"^BIN_0[1-6]$")
+    action: Literal["COLLECTED", "SKIPPED"]
+    reason: str = Field(default="", max_length=200)
+
+    @model_validator(mode="after")
+    def validate_reason(self):
+        if self.action == "SKIPPED" and not self.reason.strip():
+            raise ValueError("SKIPPED requires a reason")
+        return self
 
 def classify_fill(fill: float) -> str:
     if fill >= 80.0:
@@ -141,9 +201,20 @@ def calc_fill_from_dist(dist: float) -> float:
 
 # 1. API Nhận bản tin từ mạch Wokwi ESP32
 @app.post("/api/telemetry")
-def receive_telemetry(data: TelemetryInput):
+def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_device_key)):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+
+    # Verify registered device/bin pairing before inserting any telemetry row.
+    c.execute("SELECT device_id, status, pending_status, consecutive_count, fill_percent, is_priority FROM bins WHERE bin_id = ?", (data.bin_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Bin not found")
+    registered_device, current_status, pending_status, consecutive_count, old_fill, old_prio = row
+    if data.device_id != registered_device:
+        conn.close()
+        raise HTTPException(status_code=403, detail="Device does not own this bin")
 
     c.execute("SELECT message_id FROM telemetry_logs WHERE message_id = ?", (data.message_id,))
     if c.fetchone():
@@ -153,14 +224,6 @@ def receive_telemetry(data: TelemetryInput):
     now = time.time()
     c.execute("INSERT INTO telemetry_logs VALUES (?,?,?,?,?,?,?)",
               (data.message_id, data.bin_id, data.device_id, data.distance_cm, data.fill_percent, data.sensor_status, now))
-
-    c.execute("SELECT status, pending_status, consecutive_count, fill_percent, is_priority FROM bins WHERE bin_id = ?", (data.bin_id,))
-    row = c.fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Bin not found")
-
-    current_status, pending_status, consecutive_count, old_fill, old_prio = row
     new_prio = 1 if data.is_priority else old_prio
 
     if data.sensor_status != "OK" or data.distance_cm < 0:
@@ -188,11 +251,15 @@ def receive_telemetry(data: TelemetryInput):
 
 # 2. API Giả lập trực tiếp các nút IoT (BIN_01 .. BIN_06) từ bảng điều khiển Web
 @app.post("/api/simulate/bin")
-def simulate_bin_node(req: SimulateBinInput):
+def simulate_bin_node(req: SimulateBinInput, _authorized: None = Depends(require_admin_key)):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     now = time.time()
-    msg_id = f"SIM_{req.bin_id}_{int(now * 1000)}"
+    c.execute("SELECT 1 FROM bins WHERE bin_id = ?", (req.bin_id,))
+    if not c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Bin not found")
+    msg_id = f"SIM_{req.bin_id}_{int(now * 1000)}_{secrets.token_hex(4)}"
 
     if req.sensor_status != "OK" or req.distance_cm < 0:
         c.execute("UPDATE bins SET sensor_status = ?, is_priority = ?, last_updated = ? WHERE bin_id = ?",
@@ -407,9 +474,13 @@ def optimize_route():
     }
 
 @app.post("/api/routes/confirm")
-def confirm_collection(req: ConfirmInput):
+def confirm_collection(req: ConfirmInput, _authorized: None = Depends(require_admin_key)):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    c.execute("SELECT 1 FROM bins WHERE bin_id = ?", (req.bin_id,))
+    if not c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Bin not found")
     c.execute("INSERT OR REPLACE INTO trip_stops VALUES (?,?,?,?,?)",
               (0, req.bin_id, req.action, req.reason, time.time()))
     conn.commit()
@@ -417,7 +488,7 @@ def confirm_collection(req: ConfirmInput):
     return {"status": "confirmed", "bin_id": req.bin_id, "action": req.action}
 
 @app.post("/api/routes/reset")
-def reset_trip():
+def reset_trip(_authorized: None = Depends(require_admin_key)):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("DELETE FROM trip_stops")

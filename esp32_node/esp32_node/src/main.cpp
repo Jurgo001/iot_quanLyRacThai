@@ -3,6 +3,7 @@
 #include <HTTPClient.h>
 #include <esp_system.h>
 #include <math.h>
+#include "local_secrets.h" // P1-1: untracked per-device API key
 
 // P0 patch for Jurgo001/iot_quanLyRacThai main (original blob: 0191b888...)
 // Keep hardware pins, HTTP endpoint and bin fullness thresholds unchanged.
@@ -202,6 +203,7 @@ bool sendTelemetryToBackend(const String& payload) {
   HTTPClient http;
   if (!http.begin(BACKEND_URL)) return false;
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-API-Key", DEVICE_API_KEY);
   http.setTimeout(1500);
   int code = http.POST(payload);
   if (code >= 200 && code < 300) {
