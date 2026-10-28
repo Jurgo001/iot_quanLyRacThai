@@ -47,6 +47,11 @@
     .NORMAL { background: #2e7d32; }
     .SENSOR_ERROR, .OFFLINE { background: #475569; }
 
+    /* P1-5 UI PRIORITY: priority is separate from sensor level. */
+    .priority-row { display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:7px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:7px; }
+    .priority-row .btn { padding:6px 9px;white-space:nowrap;font-size:11px; }
+    .priority-alert { font-size:11px;margin-top:5px;color:#9a3412;line-height:1.45; }
+    .event-table td { word-break:break-word; }
     .sim-slider-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; background: #eef2f6; padding: 5px 8px; border-radius: 5px; }
     .stats-box { background: #e8f5e9; border-left: 4px solid #2e7d32; padding: 10px; border-radius: 6px; font-size: 12.5px; line-height: 1.5; }
 
@@ -171,6 +176,15 @@
       <div class="chart-box">
         <h3 style="margin-top:0; font-size:14px; color:#1b5e20;">📉 So sánh Quãng đường Lộ trình (Mét): Tuần tự vs. Nearest Neighbor vs. 2-Opt</h3>
         <canvas id="routeChart" height="140"></canvas>
+      </div>
+      <div class="log-box" style="grid-column:span 2;">
+        <h3 style="margin-top:0;font-size:14px;color:#b45309;">🚨 Nhật ký ưu tiên, cảnh báo & xử lý</h3>
+        <div style="max-height:230px;overflow-y:auto;">
+          <table class="event-table">
+            <thead><tr><th>Giờ</th><th>Thùng</th><th>Sự kiện</th><th>Chi tiết</th></tr></thead>
+            <tbody id="alert-event-body"><tr><td colspan="4">Đang tải nhật ký...</td></tr></tbody>
+          </table>
+        </div>
       </div>
       <div class="log-box">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -349,6 +363,16 @@
           </div>`;
         }
 
+        const alertHtml = (b.alert_reasons || []).map(x => escapeHtml(x)).join(' • ');
+        const priorityControlsHtml = b.data_source === 'WOKWI'
+          ? `<div class="priority-row" style="background:#e0f2fe;border-color:#bae6fd;color:#075985;font-size:11px;">
+               🚨 Ưu tiên BIN_01 được kích hoạt bằng nút khẩn cấp Wokwi.
+             </div>`
+          : `<div class="priority-row">
+               <span style="font-size:11px;"><b>🚨 Ưu tiên thu gom:</b><br>${b.is_priority ? 'ĐANG BẬT' : 'Đã tắt'}</span>
+               <button class="btn" style="background:${b.is_priority ? '#cbd5e1' : '#c2410c'};color:${b.is_priority ? '#0f172a' : '#fff'};"
+                 onclick="setBinPriority('${b.bin_id}', ${!b.is_priority})">${b.is_priority ? 'Hủy ưu tiên' : 'Bật ưu tiên'}</button>
+             </div>`;
         const sliderVal = b.distance_cm > 0 ? b.distance_cm : 50;
         // P1-2: Only simulated bins have manual controls. Wokwi BIN_01 is read-only here.
         const simControlsHtml = b.data_source === 'WOKWI'
@@ -360,9 +384,9 @@
                <input type="range" min="20" max="100" value="${sliderVal}" style="flex:1;"
                  onmousedown="isInteractingSlider=true"
                  onmouseup="isInteractingSlider=false"
-                 onchange="simulateBin('${b.bin_id}', this.value, 'OK', ${b.is_priority})" />
+                 onchange="simulateBin('${b.bin_id}', this.value, 'OK')" />
                <button class="btn" style="background:#e2e8f0; padding:3px 6px; font-size:10px;"
-                 onclick="simulateBin('${b.bin_id}', -1, 'SENSOR_ERROR', ${b.is_priority})">⚡ Báo lỗi CB</button>
+                 onclick="simulateBin('${b.bin_id}', -1, 'SENSOR_ERROR')">⚡ Báo lỗi CB</button>
              </div>`;
 
         listEl.innerHTML += `
@@ -377,7 +401,10 @@
             </div>
             <!-- P1-2: Wokwi data is read-only here; simulated bins keep sliders. -->
             ${simControlsHtml}
+            ${priorityControlsHtml}
+            ${alertHtml ? `<div class="priority-alert">🔔 ${alertHtml}</div>` : ''}
             ${tripStatusHtml}
+            ${b.trip_info && b.trip_info.action_status === 'COLLECTED' ? `<div style="font-size:11px;color:#0369a1;margin-top:5px;">✅ Đã xác nhận thu gom; số đo vẫn là lần đo cảm biến gần nhất.</div>` : ''}
             <div style="margin-top:6px; font-size:11px; color:#64748b;">Chỉ xác nhận đã thu gom khi xe thực sự tới thùng (vị trí mô phỏng sẽ chuyển tới đây).</div>
             <div style="margin-top:6px;">
               <button class="btn btn-collect" onclick="confirmStop('${b.bin_id}', 'COLLECTED')">✅ Xác nhận đã thu gom</button>
@@ -436,7 +463,21 @@
       return false;
     }
 
-    async function simulateBin(binId, distCm, sensorStatus, isPrio) {
+    async function setBinPriority(binId, enabled) {
+      if (binId === 'BIN_01') return;
+      const reason = enabled ? window.prompt('Nhập lý do thu gom ưu tiên cho ' + binId + ':', 'Rác có mùi / yêu cầu xử lý sớm')
+                             : window.prompt('Lý do hủy ưu tiên cho ' + binId + ':', 'Đã xử lý yêu cầu');
+      if (reason === null) return;
+      if (enabled && !reason.trim()) { window.alert('Bật ưu tiên phải có lý do.'); return; }
+      if (reason.length > 200) { window.alert('Lý do tối đa 200 ký tự.'); return; }
+      const ok = await adminPost('/api/bins/priority', {bin_id:binId, is_priority:enabled, reason:reason.trim()});
+      if (!ok) return;
+      await loadBins();
+      await loadLogs();
+      if (lastRouteData) await optimizeRoute();
+    }
+
+    async function simulateBin(binId, distCm, sensorStatus) {
       isInteractingSlider = false;
       // P1-2: UX guard only. The Backend is the authoritative security boundary.
       if (binId === 'BIN_01') {
@@ -446,8 +487,7 @@
       const authorized = await adminPost('/api/simulate/bin', {
           bin_id: binId,
           distance_cm: parseFloat(distCm),
-          sensor_status: sensorStatus,
-          is_priority: isPrio
+          sensor_status: sensorStatus
       });
       if (!authorized) return;
       await loadBins();
@@ -643,6 +683,12 @@
       const res = await fetch('/api/logs');
       const data = await res.json();
       const tbody = document.getElementById('log-table-body');
+      const eventTable = document.getElementById('alert-event-body');
+      const events = data.alert_events || [];
+      eventTable.innerHTML = events.length ? events.map(e => `
+        <tr><td>${escapeHtml(e.time_str)}</td><td>${escapeHtml(e.bin_id)}</td>
+        <td><b>${escapeHtml(e.event_type)}</b></td><td>${escapeHtml(e.description)}</td></tr>
+      `).join('') : '<tr><td colspan="4">Chưa có sự kiện cảnh báo.</td></tr>';
       tbody.innerHTML = data.telemetry_logs.map(l => `
         <tr>
           <td>${l.time_str}</td>
@@ -662,6 +708,7 @@
       });
       if (!authorized) return;
       await loadBins();
+      await loadLogs();
       await optimizeRoute();
     }
 

@@ -5,6 +5,7 @@ import heapq
 import json
 import secrets
 import sqlite3
+from contextlib import contextmanager
 from typing import List, Optional, Literal
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.responses import HTMLResponse
@@ -152,6 +153,13 @@ def init_db():
             ("BIN_06", "SIM_NODE_06",   "Thùng 06 - Trạm Y Tế Phường",        10.8075, 106.6248, 30.0, 87.5, "NEED_COLLECTION", "OK", "NEED_COLLECTION", 2, 0, now),
         ]
         c.executemany("INSERT INTO bins VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", sample_bins)
+    c.execute('''CREATE TABLE IF NOT EXISTS alert_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bin_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        description TEXT NOT NULL,
+        created_at REAL NOT NULL
+    )''')
     conn.commit()
     conn.close()
 
@@ -200,6 +208,19 @@ class SimulateBinInput(BaseModel):
         return self
 
 
+class PriorityInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    bin_id: str = Field(pattern=r"^BIN_0[2-6]$")
+    is_priority: StrictBool
+    reason: str = Field(default="", max_length=200)
+
+    @model_validator(mode="after")
+    def validate_reason(self):
+        if self.is_priority and not self.reason.strip():
+            raise ValueError("Bật ưu tiên cần nhập lý do")
+        return self
+
+
 class ConfirmInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     bin_id: str = Field(pattern=r"^BIN_0[1-6]$")
@@ -223,6 +244,69 @@ def calc_fill_from_dist(dist: float) -> float:
     pct = ((100.0 - dist) / (100.0 - 20.0)) * 100.0
     return round(max(0.0, min(100.0, pct)), 1)
 
+# P1-5: independent priority management & alert lifecycle.
+@contextmanager
+def p1_5_db_transaction():
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
+def log_alert_event(cursor, bin_id: str, event_type: str, description: str, now: float):
+    cursor.execute(
+        "INSERT INTO alert_events(bin_id, event_type, description, created_at) VALUES (?,?,?,?)",
+        (bin_id, event_type, description, now),
+    )
+
+
+def classify_alerts(status: str, sensor_status: str, is_priority: bool):
+    reasons = []
+    if sensor_status == "OFFLINE":
+        reasons.append("Thiết bị mất kết nối")
+    elif sensor_status == "SENSOR_ERROR":
+        reasons.append("Lỗi cảm biến")
+    if is_priority:
+        reasons.append("Yêu cầu thu gom ưu tiên")
+    if status == "NEED_COLLECTION":
+        reasons.append("Thùng đầy từ 80%")
+    elif status == "NEAR_FULL":
+        reasons.append("Thùng gần đầy 60–79%")
+    severity = ("CRITICAL" if sensor_status != "OK" or is_priority or status == "NEED_COLLECTION"
+                else "WARNING" if status == "NEAR_FULL" else "NONE")
+    return {"alert_severity": severity, "alert_reasons": reasons}
+
+
+@app.post("/api/bins/priority")
+def set_bin_priority(req: PriorityInput, _authorized: None = Depends(require_admin_key)):
+    """Only SIM_NODE_02..06. Does NOT change measurement or last_updated."""
+    with p1_5_db_transaction() as conn:
+        c = conn.cursor()
+        c.execute("SELECT device_id, is_priority FROM bins WHERE bin_id=?", (req.bin_id,))
+        found = c.fetchone()
+        if not found:
+            raise HTTPException(status_code=404, detail="Bin not found")
+        if not found[0].startswith("SIM_NODE_"):
+            raise HTTPException(status_code=409, detail="BIN_01 priority is controlled by Wokwi")
+        previous = bool(found[1])
+        if previous == req.is_priority:
+            return {"status": "unchanged", "bin_id": req.bin_id, "is_priority": previous}
+        if req.is_priority:
+            c.execute("SELECT action_status FROM trip_stops WHERE bin_id=?", (req.bin_id,))
+            completed = c.fetchone()
+            if completed:
+                raise HTTPException(status_code=409, detail="Thùng đã xử lý trong chuyến; Reset chuyến trước khi yêu cầu mới")
+        now = time.time()
+        c.execute("UPDATE bins SET is_priority=? WHERE bin_id=?", (int(req.is_priority), req.bin_id))
+        log_alert_event(c, req.bin_id,
+                        "PRIORITY_ON" if req.is_priority else "PRIORITY_OFF",
+                        req.reason.strip() or "Người điều phối hủy ưu tiên", now)
+        conn.commit()
+        return {"status": "updated", "bin_id": req.bin_id, "is_priority": req.is_priority}
+
+
 # 1. API Nhận bản tin từ mạch Wokwi ESP32
 @app.post("/api/telemetry")
 def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_device_key)):
@@ -230,12 +314,12 @@ def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_
     c = conn.cursor()
 
     # Verify registered device/bin pairing before inserting any telemetry row.
-    c.execute("SELECT device_id, status, pending_status, consecutive_count, fill_percent, is_priority FROM bins WHERE bin_id = ?", (data.bin_id,))
+    c.execute("SELECT device_id, status, pending_status, consecutive_count, fill_percent, is_priority, sensor_status, last_updated FROM bins WHERE bin_id = ?", (data.bin_id,))
     row = c.fetchone()
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Bin not found")
-    registered_device, current_status, pending_status, consecutive_count, old_fill, old_prio = row
+    registered_device, current_status, pending_status, consecutive_count, old_fill, old_prio, old_sensor, old_updated = row
     if data.device_id != registered_device:
         conn.close()
         raise HTTPException(status_code=403, detail="Device does not own this bin")
@@ -253,6 +337,14 @@ def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_
     c.execute("INSERT INTO telemetry_logs VALUES (?,?,?,?,?,?,?)",
               (data.message_id, data.bin_id, data.device_id, data.distance_cm, data.fill_percent, data.sensor_status, now))
     new_prio = 1 if data.is_priority else old_prio
+    if data.is_priority and not old_prio:
+        log_alert_event(c, data.bin_id, "PRIORITY_ON", "Nút khẩn cấp trên Wokwi", now)
+    if old_updated is not None and now - old_updated > 60:
+        log_alert_event(c, data.bin_id, "DEVICE_ONLINE", "Thiết bị kết nối và gửi dữ liệu lại", now)
+    if data.sensor_status != "OK" and old_sensor != "SENSOR_ERROR":
+        log_alert_event(c, data.bin_id, "SENSOR_ERROR", "Cảm biến báo lỗi", now)
+    if data.sensor_status == "OK" and old_sensor == "SENSOR_ERROR":
+        log_alert_event(c, data.bin_id, "SENSOR_RECOVERED", "Cảm biến hoạt động trở lại", now)
 
     if data.sensor_status != "OK" or data.distance_cm < 0:
         c.execute("UPDATE bins SET sensor_status = 'SENSOR_ERROR', is_priority = ?, last_updated = ? WHERE bin_id = ?",
@@ -269,6 +361,9 @@ def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_
         consecutive_count = 1
 
     new_status = candidate_status if consecutive_count >= 2 else current_status
+    if new_status != current_status:
+        log_alert_event(c, data.bin_id, "FILL_STATUS_CHANGED",
+                        f"{current_status} → {new_status} ({data.fill_percent:.1f}%)", now)
 
     c.execute('''UPDATE bins SET distance_cm=?, fill_percent=?, status=?, sensor_status='OK',
                  pending_status=?, consecutive_count=?, is_priority=?, last_updated=? WHERE bin_id=?''',
@@ -285,7 +380,7 @@ def simulate_bin_node(req: SimulateBinInput, _authorized: None = Depends(require
     now = time.time()
     # P1-2: Enforce source ownership in Backend, not just in the Web UI.
     # BIN_01 belongs to ESP32_NODE_01; the simulator cannot overwrite it even with an admin key.
-    c.execute("SELECT device_id FROM bins WHERE bin_id = ?", (req.bin_id,))
+    c.execute("SELECT device_id, sensor_status, status FROM bins WHERE bin_id = ?", (req.bin_id,))
     registered = c.fetchone()
     if not registered:
         conn.close()
@@ -293,19 +388,28 @@ def simulate_bin_node(req: SimulateBinInput, _authorized: None = Depends(require
     if not registered[0].startswith("SIM_NODE_"):
         conn.close()
         raise HTTPException(status_code=409, detail="This bin is controlled by Wokwi/ESP32; use the sensor")
+    old_sensor, old_status = registered[1], registered[2]
+    new_sensor = req.sensor_status
+    if old_sensor != new_sensor:
+        log_alert_event(c, req.bin_id,
+                        "SENSOR_ERROR" if new_sensor == "SENSOR_ERROR" else "SENSOR_RECOVERED",
+                        "Mô phỏng cảm biến lỗi" if new_sensor == "SENSOR_ERROR" else "Mô phỏng cảm biến phục hồi", now)
     msg_id = f"SIM_{req.bin_id}_{int(now * 1000)}_{secrets.token_hex(4)}"
 
     if req.sensor_status != "OK" or req.distance_cm < 0:
-        c.execute("UPDATE bins SET sensor_status = ?, is_priority = ?, last_updated = ? WHERE bin_id = ?",
-                  (req.sensor_status, 1 if req.is_priority else 0, now, req.bin_id))
+        c.execute("UPDATE bins SET sensor_status = ?, last_updated = ? WHERE bin_id = ?",
+                  (req.sensor_status, now, req.bin_id))
         c.execute("INSERT INTO telemetry_logs VALUES (?,?,?,?,?,?,?)",
                   (msg_id, req.bin_id, f"SIM_{req.bin_id}", -1.0, -1.0, req.sensor_status, now))
     else:
         fill = calc_fill_from_dist(req.distance_cm)
         st = classify_fill(fill)
+        if st != old_status:
+            log_alert_event(c, req.bin_id, "FILL_STATUS_CHANGED",
+                            f"{old_status} → {st} ({fill:.1f}%)", now)
         c.execute('''UPDATE bins SET distance_cm=?, fill_percent=?, status=?, sensor_status='OK',
-                     pending_status=?, consecutive_count=2, is_priority=?, last_updated=? WHERE bin_id=?''',
-                  (req.distance_cm, fill, st, st, 1 if req.is_priority else 0, now, req.bin_id))
+                     pending_status=?, consecutive_count=2, last_updated=? WHERE bin_id=?''',
+                  (req.distance_cm, fill, st, st, now, req.bin_id))
         c.execute("INSERT INTO telemetry_logs VALUES (?,?,?,?,?,?,?)",
                   (msg_id, req.bin_id, f"SIM_{req.bin_id}", req.distance_cm, fill, "OK", now))
     conn.commit()
@@ -331,11 +435,14 @@ def get_bins():
         last_updated = r[10]
         seconds_ago = max(0, int(now - last_updated)) if last_updated is not None else None
         is_offline = (r[0] == "BIN_01") and (last_updated is None or seconds_ago > 60)
+        alerts = classify_alerts(r[7], "OFFLINE" if is_offline else r[8], bool(r[9]))
         result.append({
             "bin_id": r[0], "device_id": r[1], "name": r[2], "lat": r[3], "lng": r[4],
             "distance_cm": r[5], "fill_percent": r[6], "status": r[7],
             "sensor_status": "OFFLINE" if is_offline else r[8],
             "is_priority": bool(r[9]),
+            "alert_severity": alerts["alert_severity"],
+            "alert_reasons": alerts["alert_reasons"],
             "seconds_ago": seconds_ago,
             "data_source": "WOKWI" if r[0] == "BIN_01" else "SIMULATED",
             "consecutive_count": r[11],
@@ -372,8 +479,14 @@ def get_system_logs():
         }
         for r in c.fetchall()
     ]
+    c.execute("SELECT bin_id, event_type, description, created_at FROM alert_events ORDER BY id DESC LIMIT 40")
+    events = [
+        {"bin_id": row[0], "event_type": row[1], "description": row[2],
+         "time_str": time.strftime("%H:%M:%S", time.localtime(row[3]))}
+        for row in c.fetchall()
+    ]
     conn.close()
-    return {"telemetry_logs": logs}
+    return {"telemetry_logs": logs, "alert_events": events}
 
 # Thuật toán Dijkstra tìm đường ngắn nhất qua các nút giao lộ cục bộ
 def dijkstra_shortest_path(graph, start, target):
@@ -548,17 +661,31 @@ def optimize_route():
 
 @app.post("/api/routes/confirm")
 def confirm_collection(req: ConfirmInput, _authorized: None = Depends(require_admin_key)):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT 1 FROM bins WHERE bin_id = ?", (req.bin_id,))
-    if not c.fetchone():
-        conn.close()
-        raise HTTPException(status_code=404, detail="Bin not found")
-    c.execute("INSERT OR REPLACE INTO trip_stops VALUES (?,?,?,?,?)",
-              (0, req.bin_id, req.action, req.reason, time.time()))
-    conn.commit()
-    conn.close()
-    return {"status": "confirmed", "bin_id": req.bin_id, "action": req.action}
+    with p1_5_db_transaction() as conn:
+        c = conn.cursor()
+        c.execute("SELECT is_priority FROM bins WHERE bin_id = ?", (req.bin_id,))
+        row = c.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Bin not found")
+        c.execute("SELECT action_status, skip_reason FROM trip_stops WHERE bin_id = ?", (req.bin_id,))
+        prior = c.fetchone()
+        if prior and prior[0] == req.action and (prior[1] or "") == req.reason:
+            return {"status": "duplicate_ignored", "bin_id": req.bin_id, "action": req.action}
+        now = time.time()
+        c.execute("INSERT OR REPLACE INTO trip_stops VALUES (?,?,?,?,?)",
+                  (0, req.bin_id, req.action, req.reason, now))
+        if req.action == "COLLECTED":
+            if row[0]:
+                c.execute("UPDATE bins SET is_priority=0 WHERE bin_id=?", (req.bin_id,))
+                log_alert_event(c, req.bin_id, "PRIORITY_CLEARED",
+                                "Đã thu gom; đóng yêu cầu ưu tiên", now)
+            log_alert_event(c, req.bin_id, "COLLECTED",
+                            "Tài xế xác nhận đã thu gom; chưa xác nhận thùng rỗng bằng cảm biến", now)
+        else:
+            log_alert_event(c, req.bin_id, "SKIPPED", req.reason, now)
+        conn.commit()
+        return {"status": "confirmed", "bin_id": req.bin_id, "action": req.action}
+
 
 @app.post("/api/routes/reset")
 def reset_trip(_authorized: None = Depends(require_admin_key)):
