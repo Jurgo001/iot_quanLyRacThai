@@ -20,6 +20,10 @@ const int LED_YELLOW_PIN = 26;
 const int LED_RED_PIN = 27;
 const int BTN_PRIO_PIN = 14;
 const int SW_FAULT_PIN = 33;
+// P2-2: Wokwi switches emulate digital outputs of tilt / fire detectors.
+// They are NOT a physical MPU6050, smoke detector, or certified fire alarm.
+const int SW_TILT_PIN = 32;
+const int SW_FIRE_PIN = 13;  // RTC-capable GPIO for a later validated wakeup design
 
 const float D_EMPTY = 100.0f;
 const float D_FULL = 20.0f;
@@ -30,7 +34,9 @@ const unsigned long HTTP_RETRY_INTERVAL_MS = 3000;
 const unsigned long HTTP_NEXT_INTERVAL_MS = 200;
 const unsigned long DEBUG_INTERVAL_MS = 2000;
 const unsigned long BUTTON_DEBOUNCE_MS = 40;
+const unsigned long HAZARD_DEBOUNCE_MS = 80;
 const int SENSOR_WINDOW = 5;
+const int SMOOTH_WINDOW = 3;
 const int MAX_QUEUE = 24;
 
 struct TelemetryMessage {
@@ -57,15 +63,45 @@ float samples[SENSOR_WINDOW] = { -1, -1, -1, -1, -1 };
 int samplePos = 0;
 int sampleCount = 0;
 float distanceCm = -1.0f;
+float lastMedianCm = -1.0f;
 float fillPercent = -1.0f;
 String sensorStatus = "SENSOR_ERROR";
 bool readingReady = false;
+float medianHistory[SMOOTH_WINDOW] = { 0, 0, 0 };
+int smoothPos = 0;
+int smoothCount = 0;
+
+struct DebouncedHazard {
+  int pin;
+  int raw;
+  bool active;
+  unsigned long rawChangedMs;
+  explicit DebouncedHazard(int inputPin)
+      : pin(inputPin), raw(HIGH), active(false), rawChangedMs(0) {}
+};
+DebouncedHazard tiltSwitch(SW_TILT_PIN);
+DebouncedHazard fireSwitch(SW_FIRE_PIN);
+bool tiltDetected = false;
+bool fireDetected = false;
 
 int lastRawButton = HIGH;
 int stableButton = HIGH;
 unsigned long lastButtonChangeMs = 0;
 
 void updateLocalLeds(float fill, const String& status) {
+  // Safety alarms take visual precedence over normal fill-level LEDs.
+  if (fireDetected) {
+    digitalWrite(LED_GREEN_PIN, LOW);
+    digitalWrite(LED_YELLOW_PIN, LOW);
+    digitalWrite(LED_RED_PIN, (millis() / 180) % 2 ? HIGH : LOW);
+    return;
+  }
+  if (tiltDetected) {
+    digitalWrite(LED_GREEN_PIN, LOW);
+    digitalWrite(LED_RED_PIN, LOW);
+    digitalWrite(LED_YELLOW_PIN, (millis() / 300) % 2 ? HIGH : LOW);
+    return;
+  }
   if (status != "OK") {
     digitalWrite(LED_GREEN_PIN, LOW);
     digitalWrite(LED_YELLOW_PIN, LOW);
@@ -98,6 +134,25 @@ float calculateFillPercent(float distance) {
   return roundf(percent * 10.0f) / 10.0f;
 }
 
+// P2-1: Use a moving average of the *median* samples, not the raw echo pulses.
+// Until the window warms up, average only available entries (no startup bias).
+// Reset it on confirmed SENSOR_ERROR so recovery cannot reuse stale readings.
+void resetMedianSmoother() {
+  smoothPos = 0;
+  smoothCount = 0;
+  lastMedianCm = -1.0f;
+}
+
+float smoothMedian(float medianCm) {
+  medianHistory[smoothPos] = medianCm;
+  smoothPos = (smoothPos + 1) % SMOOTH_WINDOW;
+  if (smoothCount < SMOOTH_WINDOW) smoothCount++;
+  float total = 0.0f;
+  for (int i = 0; i < smoothCount; i++) total += medianHistory[i];
+  lastMedianCm = medianCm;
+  return total / smoothCount;
+}
+
 void sampleSensor(unsigned long now) {
   if (now - lastSampleMs < SENSOR_SAMPLE_INTERVAL_MS) return;
   lastSampleMs = now;
@@ -113,6 +168,7 @@ void sampleSensor(unsigned long now) {
   }
   readingReady = true;
   if (n < 3) {
+    resetMedianSmoother();
     distanceCm = -1.0f;
     fillPercent = -1.0f;
     sensorStatus = "SENSOR_ERROR";
@@ -125,7 +181,8 @@ void sampleSensor(unsigned long now) {
       }
     }
   }
-  distanceCm = valid[n / 2];
+  // P0 Median Filter retained; P2 adds a three-median moving average.
+  distanceCm = smoothMedian(valid[n / 2]);
   fillPercent = calculateFillPercent(distanceCm);
   sensorStatus = "OK";
 }
@@ -139,6 +196,20 @@ bool buttonPressedOnce(unsigned long now) {
   if (now - lastButtonChangeMs >= BUTTON_DEBOUNCE_MS && raw != stableButton) {
     stableButton = raw;
     return stableButton == LOW;
+  }
+  return false;
+}
+
+bool updateHazardSwitch(DebouncedHazard& sensor, unsigned long now) {
+  int current = digitalRead(sensor.pin);
+  if (current != sensor.raw) {
+    sensor.raw = current;
+    sensor.rawChangedMs = now;
+  }
+  const bool newActive = (current == LOW);
+  if (now - sensor.rawChangedMs >= HAZARD_DEBOUNCE_MS && newActive != sensor.active) {
+    sensor.active = newActive;
+    return true;
   }
   return false;
 }
@@ -158,9 +229,12 @@ void removeOutboxAt(int index) {
   outbox[--outboxSize] = TelemetryMessage();
 }
 
-bool enqueueTelemetry(bool priority, unsigned long now) {
+bool enqueueTelemetry(bool priority, bool hazardTransition, unsigned long now) {
+  // Hazard transitions deserve FIFO protection but MUST NOT silently toggle
+  // the manual is_priority flag controlled by the physical emergency button.
+  bool urgent = priority || hazardTransition;
   if (outboxSize == MAX_QUEUE) {
-    if (!priority) {
+    if (!urgent) {
       Serial.println("[QUEUE] FULL - bo qua 1 ban tin thong thuong; can bo nho ben vung neu can offline lau.");
       return false;
     }
@@ -186,12 +260,14 @@ bool enqueueTelemetry(bool priority, unsigned long now) {
   payload += "\"distance_cm\":" + String(distanceCm, 1) + ",";
   payload += "\"fill_percent\":" + String(fillPercent, 1) + ",";
   payload += "\"sensor_status\":\"" + sensorStatus + "\",";
-  payload += "\"is_priority\":" + String(priority ? "true" : "false");
+  payload += "\"is_priority\":" + String(priority ? "true" : "false") + ",";
+  payload += "\"tilt_detected\":" + String(tiltDetected ? "true" : "false") + ",";
+  payload += "\"fire_detected\":" + String(fireDetected ? "true" : "false");
   payload += "}";
 
   outbox[outboxSize].messageId = messageId;
   outbox[outboxSize].payload = payload;
-  outbox[outboxSize].priority = priority;
+  outbox[outboxSize].priority = urgent;
   outboxSize++;
   if (priority) Serial.println("[PRIORITY] Nhan nut khan cap tai thung! Da xep hang ban tin uu tien.");
   Serial.printf("[QUEUE] %s | waiting=%d\n", messageId.c_str(), outboxSize);
@@ -240,8 +316,10 @@ void setup() {
   pinMode(LED_RED_PIN, OUTPUT);
   pinMode(BTN_PRIO_PIN, INPUT_PULLUP);
   pinMode(SW_FAULT_PIN, INPUT_PULLUP);
+  pinMode(SW_TILT_PIN, INPUT_PULLUP);
+  pinMode(SW_FIRE_PIN, INPUT_PULLUP);
   bootSessionId = esp_random();
-  Serial.println("=== SMART WASTE IoT - P0: nonblocking startup, debounce, FIFO ===");
+  Serial.println("=== SMART WASTE IoT - P2-Stage1: Median + SMA, simulated tilt/fire ===");
   Serial.printf("[BOOT] session=%08lx sw_fault=%d\n", (unsigned long)bootSessionId, digitalRead(SW_FAULT_PIN));
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
@@ -253,6 +331,13 @@ void loop() {
   unsigned long now = millis();
   maintainWifi(now);
   bool priorityEvent = buttonPressedOnce(now);
+  bool hazardChanged = updateHazardSwitch(tiltSwitch, now);
+  hazardChanged = updateHazardSwitch(fireSwitch, now) || hazardChanged;
+  tiltDetected = tiltSwitch.active;
+  fireDetected = fireSwitch.active;
+  if (hazardChanged) {
+    Serial.printf("[HAZARD] TILT=%d FIRE=%d (Wokwi simulated inputs)\n", tiltDetected, fireDetected);
+  }
   sampleSensor(now);
   updateLocalLeds(fillPercent, sensorStatus);
 
@@ -260,10 +345,10 @@ void loop() {
   bool fillChanged = readingReady && sensorStatus == "OK" &&
        (lastQueuedFill < 0.0f || fabsf(fillPercent - lastQueuedFill) >= 10.0f);
   bool statusChanged = readingReady && sensorStatus != lastQueuedSensorStatus;
-  if (priorityEvent || (readingReady && (!haveQueuedTelemetry || periodic || fillChanged || statusChanged))) {
+  if (priorityEvent || hazardChanged || (readingReady && (!haveQueuedTelemetry || periodic || fillChanged || statusChanged))) {
     // Avoid tight-loop retries when queue is full and network is down.
     lastTelemetryAttemptMs = now;
-    bool added = enqueueTelemetry(priorityEvent, now);
+    bool added = enqueueTelemetry(priorityEvent, hazardChanged, now);
     if (added) {
       haveQueuedTelemetry = true;
       lastQueuedSensorStatus = sensorStatus;
@@ -273,9 +358,9 @@ void loop() {
 
   if (now - lastDebugMs >= DEBUG_INTERVAL_MS) {
     lastDebugMs = now;
-    Serial.printf("[SENSOR] sw_fault=%d dist=%.1f cm fill=%.1f%% status=%s queue=%d WiFi=%d\n",
-                  digitalRead(SW_FAULT_PIN), distanceCm, fillPercent, sensorStatus.c_str(),
-                  outboxSize, WiFi.status() == WL_CONNECTED);
+    Serial.printf("[SENSOR] sw_fault=%d median=%.1f dist_sma=%.1f cm fill=%.1f%% status=%s tilt=%d fire=%d queue=%d WiFi=%d\n",
+                  digitalRead(SW_FAULT_PIN), lastMedianCm, distanceCm, fillPercent,
+                  sensorStatus.c_str(), tiltDetected, fireDetected, outboxSize, WiFi.status() == WL_CONNECTED);
   }
   flushOutbox(millis());
   // HTTPClient POST can still block for up to its timeout (1.5 s); not hard real-time.

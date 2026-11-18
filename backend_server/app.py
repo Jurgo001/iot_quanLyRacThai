@@ -122,7 +122,9 @@ def init_db():
         pending_status TEXT,
         consecutive_count INTEGER,
         is_priority INTEGER,
-        last_updated REAL
+        last_updated REAL,
+        tilt_detected INTEGER NOT NULL DEFAULT 0,
+        fire_detected INTEGER NOT NULL DEFAULT 0
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS telemetry_logs (
         message_id TEXT PRIMARY KEY,
@@ -141,6 +143,13 @@ def init_db():
         updated_at REAL
     )''')
 
+    # P2-Stage1 additive migration. Preserve every existing sensor reading,
+    # trip, priority flag and event in the real project database.
+    existing_columns = {row[1] for row in c.execute("PRAGMA table_info(bins)")}
+    for field_name in ("tilt_detected", "fire_detected"):
+        if field_name not in existing_columns:
+            c.execute(f"ALTER TABLE bins ADD COLUMN {field_name} INTEGER NOT NULL DEFAULT 0")
+
     c.execute("SELECT COUNT(*) FROM bins")
     if c.fetchone()[0] == 0:
         now = time.time()
@@ -152,7 +161,10 @@ def init_db():
             ("BIN_05", "SIM_NODE_05",   "Thùng 05 - Nhà Văn Hóa Tây Thạnh",   10.8032, 106.6255, 24.0, 95.0, "NEED_COLLECTION", "OK", "NEED_COLLECTION", 2, 1, now),
             ("BIN_06", "SIM_NODE_06",   "Thùng 06 - Trạm Y Tế Phường",        10.8075, 106.6248, 30.0, 87.5, "NEED_COLLECTION", "OK", "NEED_COLLECTION", 2, 0, now),
         ]
-        c.executemany("INSERT INTO bins VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", sample_bins)
+        c.executemany('''INSERT INTO bins
+            (bin_id, device_id, name, lat, lng, distance_cm, fill_percent,
+             status, sensor_status, pending_status, consecutive_count, is_priority, last_updated)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''', sample_bins)
     c.execute('''CREATE TABLE IF NOT EXISTS alert_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         bin_id TEXT NOT NULL,
@@ -176,6 +188,9 @@ class TelemetryInput(BaseModel):
     fill_percent: float = Field(allow_inf_nan=False)
     sensor_status: Literal["OK", "SENSOR_ERROR"]
     is_priority: StrictBool = False
+    # Optional for old Wokwi firmware; strict bool rejects 0/1/string guesses.
+    tilt_detected: StrictBool = False
+    fire_detected: StrictBool = False
 
     @model_validator(mode="after")
     def ensure_consistency(self):
@@ -262,8 +277,13 @@ def log_alert_event(cursor, bin_id: str, event_type: str, description: str, now:
     )
 
 
-def classify_alerts(status: str, sensor_status: str, is_priority: bool):
+def classify_alerts(status: str, sensor_status: str, is_priority: bool,
+                    tilt_detected: bool = False, fire_detected: bool = False):
     reasons = []
+    if fire_detected:
+        reasons.append("Nguy cơ cháy (đầu vào Wokwi mô phỏng)")
+    if tilt_detected:
+        reasons.append("Thùng bị nghiêng/đổ (đầu vào Wokwi mô phỏng)")
     if sensor_status == "OFFLINE":
         reasons.append("Thiết bị mất kết nối")
     elif sensor_status == "SENSOR_ERROR":
@@ -274,7 +294,7 @@ def classify_alerts(status: str, sensor_status: str, is_priority: bool):
         reasons.append("Thùng đầy từ 80%")
     elif status == "NEAR_FULL":
         reasons.append("Thùng gần đầy 60–79%")
-    severity = ("CRITICAL" if sensor_status != "OK" or is_priority or status == "NEED_COLLECTION"
+    severity = ("CRITICAL" if fire_detected or tilt_detected or sensor_status != "OK" or is_priority or status == "NEED_COLLECTION"
                 else "WARNING" if status == "NEAR_FULL" else "NONE")
     return {"alert_severity": severity, "alert_reasons": reasons}
 
@@ -314,12 +334,12 @@ def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_
     c = conn.cursor()
 
     # Verify registered device/bin pairing before inserting any telemetry row.
-    c.execute("SELECT device_id, status, pending_status, consecutive_count, fill_percent, is_priority, sensor_status, last_updated FROM bins WHERE bin_id = ?", (data.bin_id,))
+    c.execute("SELECT device_id, status, pending_status, consecutive_count, fill_percent, is_priority, sensor_status, last_updated, tilt_detected, fire_detected FROM bins WHERE bin_id = ?", (data.bin_id,))
     row = c.fetchone()
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Bin not found")
-    registered_device, current_status, pending_status, consecutive_count, old_fill, old_prio, old_sensor, old_updated = row
+    registered_device, current_status, pending_status, consecutive_count, old_fill, old_prio, old_sensor, old_updated, old_tilt, old_fire = row
     if data.device_id != registered_device:
         conn.close()
         raise HTTPException(status_code=403, detail="Device does not own this bin")
@@ -345,6 +365,17 @@ def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_
         log_alert_event(c, data.bin_id, "SENSOR_ERROR", "Cảm biến báo lỗi", now)
     if data.sensor_status == "OK" and old_sensor == "SENSOR_ERROR":
         log_alert_event(c, data.bin_id, "SENSOR_RECOVERED", "Cảm biến hoạt động trở lại", now)
+
+    # P2-Stage1: alarm lifecycle is independent of fill, manual priority,
+    # and sensor fault. A repeated packet does not log duplicate transitions.
+    if bool(old_tilt) != data.tilt_detected:
+        log_alert_event(c, data.bin_id, "TILT_DETECTED" if data.tilt_detected else "TILT_CLEARED",
+                        "Thùng bị nghiêng/đổ (Wokwi mô phỏng)" if data.tilt_detected else "Thùng trở về vị trí bình thường", now)
+    if bool(old_fire) != data.fire_detected:
+        log_alert_event(c, data.bin_id, "FIRE_DETECTED" if data.fire_detected else "FIRE_CLEARED",
+                        "Nguy cơ cháy (Wokwi mô phỏng)" if data.fire_detected else "Đầu vào báo cháy trở về bình thường", now)
+    c.execute("UPDATE bins SET tilt_detected=?, fire_detected=? WHERE bin_id=?",
+              (int(data.tilt_detected), int(data.fire_detected), data.bin_id))
 
     if data.sensor_status != "OK" or data.distance_cm < 0:
         c.execute("UPDATE bins SET sensor_status = 'SENSOR_ERROR', is_priority = ?, last_updated = ? WHERE bin_id = ?",
@@ -421,7 +452,7 @@ def simulate_bin_node(req: SimulateBinInput, _authorized: None = Depends(require
 def get_bins():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("SELECT bin_id, device_id, name, lat, lng, distance_cm, fill_percent, status, sensor_status, is_priority, last_updated, consecutive_count FROM bins ORDER BY bin_id ASC")
+    c.execute("SELECT bin_id, device_id, name, lat, lng, distance_cm, fill_percent, status, sensor_status, is_priority, last_updated, consecutive_count, tilt_detected, fire_detected FROM bins ORDER BY bin_id ASC")
     rows = c.fetchall()
     c.execute("SELECT bin_id, action_status, skip_reason FROM trip_stops")
     stops = {r[0]: {"action_status": r[1], "skip_reason": r[2]} for r in c.fetchall()}
@@ -435,12 +466,14 @@ def get_bins():
         last_updated = r[10]
         seconds_ago = max(0, int(now - last_updated)) if last_updated is not None else None
         is_offline = (r[0] == "BIN_01") and (last_updated is None or seconds_ago > 60)
-        alerts = classify_alerts(r[7], "OFFLINE" if is_offline else r[8], bool(r[9]))
+        alerts = classify_alerts(r[7], "OFFLINE" if is_offline else r[8], bool(r[9]), bool(r[12]), bool(r[13]))
         result.append({
             "bin_id": r[0], "device_id": r[1], "name": r[2], "lat": r[3], "lng": r[4],
             "distance_cm": r[5], "fill_percent": r[6], "status": r[7],
             "sensor_status": "OFFLINE" if is_offline else r[8],
             "is_priority": bool(r[9]),
+            "tilt_detected": bool(r[12]),
+            "fire_detected": bool(r[13]),
             "alert_severity": alerts["alert_severity"],
             "alert_reasons": alerts["alert_reasons"],
             "seconds_ago": seconds_ago,

@@ -14,7 +14,9 @@
     { "type": "wokwi-resistor", "id": "r_y", "top": 45, "left": -60, "attrs": { "value": "220" } },
     { "type": "wokwi-resistor", "id": "r_r", "top": 115, "left": -60, "attrs": { "value": "220" } },
     { "type": "wokwi-pushbutton", "id": "btn_priority", "top": 140, "left": 175, "attrs": { "color": "red", "label": "Gui khan cap" } },
-    { "type": "wokwi-slide-switch", "id": "sw_fault", "top": 215, "left": 185, "attrs": { "label": "Gia lap Loi Cam Bien", "value": "1" } }
+    { "type": "wokwi-slide-switch", "id": "sw_fault", "top": 215, "left": 185, "attrs": { "label": "Gia lap Loi Cam Bien", "value": "1" } },
+    { "type": "wokwi-slide-switch", "id": "sw_tilt", "top": 300, "left": 185, "attrs": { "label": "P2: Gia lap Thung Nghieng", "value": "1" } },
+    { "type": "wokwi-slide-switch", "id": "sw_fire", "top": 385, "left": 185, "attrs": { "label": "P2: Gia lap Nguy Co Chay", "value": "1" } }
   ],
   "connections": [
     [ "esp:TX0", "$serialMonitor:RX", "", [] ],
@@ -39,7 +41,13 @@
     [ "btn_priority:2.l", "esp:GND.1", "black", [ "v0" ] ],
     [ "sw_fault:1", "esp:GND.1", "black", [ "v0" ] ],
     [ "sw_fault:2", "esp:D33", "purple", [ "v0" ] ],
-    [ "sw_fault:3", "esp:3V3", "red", [ "v0" ] ]
+    [ "sw_fault:3", "esp:3V3", "red", [ "v0" ] ],
+    [ "sw_tilt:1", "esp:GND.1", "black", [ "v0" ] ],
+    [ "sw_tilt:2", "esp:D32", "purple", [ "v0" ] ],
+    [ "sw_tilt:3", "esp:3V3", "red", [ "v0" ] ],
+    [ "sw_fire:1", "esp:GND.1", "black", [ "v0" ] ],
+    [ "sw_fire:2", "esp:D13", "orange", [ "v0" ] ],
+    [ "sw_fire:3", "esp:3V3", "red", [ "v0" ] ]
   ],
   "dependencies": {}
 }

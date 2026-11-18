@@ -46,6 +46,12 @@
     .NEAR_FULL { background: #f57c00; }
     .NORMAL { background: #2e7d32; }
     .SENSOR_ERROR, .OFFLINE { background: #475569; }
+    /* P2-Stage1: independent Wokwi-simulated safety inputs. */
+    .FIRE_DETECTED { background: #b91c1c; }
+    .TILT_DETECTED { background: #b45309; }
+    .hazard-alert { margin-top:7px; padding:8px 10px; border-radius:6px; font-size:12px; font-weight:700; line-height:1.5; }
+    .hazard-alert.fire { background:#fee2e2; border:1px solid #fca5a5; color:#991b1b; }
+    .hazard-alert.tilt { background:#fef3c7; border:1px solid #fcd34d; color:#92400e; }
 
     /* P1-5 UI PRIORITY: priority is separate from sensor level. */
     .priority-row { display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:7px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:7px; }
@@ -339,13 +345,15 @@
 
       data.bins.forEach(b => {
         const isErr = (b.sensor_status !== 'OK');
+        const hasFire = b.fire_detected === true;
+        const hasTilt = b.tilt_detected === true;
         if (isErr) countErr++;
         else if (b.status === 'NEED_COLLECTION') countFull++;
         else if (b.status === 'NEAR_FULL') countNear++;
 
-        const badgeClass = isErr ? b.sensor_status : b.status;
-        const badgeText = isErr ? `[LỖI: ${b.sensor_status}]` : statusLabels[b.status];
-        const color = isErr ? '#475569' : (b.status === 'NEED_COLLECTION' ? '#d32f2f' : (b.status === 'NEAR_FULL' ? '#f57c00' : '#2e7d32'));
+        const badgeClass = hasFire ? 'FIRE_DETECTED' : hasTilt ? 'TILT_DETECTED' : isErr ? b.sensor_status : b.status;
+        const badgeText = hasFire ? 'NGUY CƠ CHÁY' : hasTilt ? 'THÙNG NGHIÊNG' : isErr ? `[LỖI: ${b.sensor_status}]` : statusLabels[b.status];
+        const color = hasFire ? '#b91c1c' : hasTilt ? '#b45309' : isErr ? '#475569' : (b.status === 'NEED_COLLECTION' ? '#d32f2f' : (b.status === 'NEAR_FULL' ? '#f57c00' : '#2e7d32'));
 
         if (markers[b.bin_id]) map.removeLayer(markers[b.bin_id]);
         markers[b.bin_id] = L.circleMarker([b.lat, b.lng], {
@@ -353,7 +361,8 @@
         }).addTo(map).bindPopup(`
           <b>${b.name}</b><br>
           • Khoảng cách: <b>${b.distance_cm} cm</b> | Mức đầy: <b>${b.fill_percent}%</b><br>
-          • Trạng thái: <b>${badgeText}</b> ${b.is_priority ? '🔥 [ƯU TIÊN]' : ''}
+          • Trạng thái: <b>${badgeText}</b> ${b.is_priority ? '🚨 [ƯU TIÊN]' : ''}<br>
+          • Nghiêng: <b>${hasTilt ? 'CÓ' : 'Không'}</b> | Nguy cơ cháy: <b>${hasFire ? 'CÓ' : 'Không'}</b> (Wokwi mô phỏng)
         `);
 
         let tripStatusHtml = '';
@@ -364,6 +373,7 @@
         }
 
         const alertHtml = (b.alert_reasons || []).map(x => escapeHtml(x)).join(' • ');
+        const hazardHtml = `${hasFire ? '<div class="hazard-alert fire">🔥 NGUY CƠ CHÁY — liên hệ đơn vị xử lý an toàn; không tự điều xe rác tới hiện trường.</div>' : ''}${hasTilt ? '<div class="hazard-alert tilt">⚠️ THÙNG BỊ NGHIÊNG/ĐỔ — cần kiểm tra hiện trường.</div>' : ''}`;
         const priorityControlsHtml = b.data_source === 'WOKWI'
           ? `<div class="priority-row" style="background:#e0f2fe;border-color:#bae6fd;color:#075985;font-size:11px;">
                🚨 Ưu tiên BIN_01 được kích hoạt bằng nút khẩn cấp Wokwi.
@@ -402,6 +412,7 @@
             <!-- P1-2: Wokwi data is read-only here; simulated bins keep sliders. -->
             ${simControlsHtml}
             ${priorityControlsHtml}
+            ${hazardHtml}
             ${alertHtml ? `<div class="priority-alert">🔔 ${alertHtml}</div>` : ''}
             ${tripStatusHtml}
             ${b.trip_info && b.trip_info.action_status === 'COLLECTED' ? `<div style="font-size:11px;color:#0369a1;margin-top:5px;">✅ Đã xác nhận thu gom; số đo vẫn là lần đo cảm biến gần nhất.</div>` : ''}
