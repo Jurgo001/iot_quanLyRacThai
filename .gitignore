@@ -1,0 +1,5 @@
+
+
+# P1-1 local secrets (never commit)
+/backend_server/p1_local_keys.json
+/esp32_node/esp32_node/src/local_secrets.h
