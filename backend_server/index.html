@@ -2,6 +2,7 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Hệ Thống Quản Lý Rác Thải Thông Minh - Nhóm 15 HUIT</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -98,19 +99,89 @@
       .p3-kpis {grid-template-columns:repeat(2,minmax(120px,1fr));}
       .nav-tabs {flex-wrap:wrap;}
     }
+
+    /* Local dashboard refresh: presentation only; existing API and controls retained. */
+    :root { --forest:#153e35; --green:#16735e; --muted:#718079; --line:#e1e8e3; --surface:#fff; }
+    body { background:#f2f5f2; color:#253d35; font-family:'Segoe UI',Arial,sans-serif; }
+    header { background:#fff; color:var(--forest); padding:16px 24px; gap:20px; box-shadow:none; border-bottom:1px solid var(--line); }
+    .brand-title { display:flex;align-items:center;gap:9px;font-size:24px;letter-spacing:-.7px; }
+    .brand-mark { display:inline-flex;align-items:center;justify-content:center;width:33px;height:33px;background:var(--forest);color:#fff;border-radius:10px;font-size:20px; }
+    .brand-tag {font-size:9px;letter-spacing:1.4px;color:var(--muted);font-weight:700;margin-left:4px;}
+    .brand-sub {font-size:10px;color:var(--muted);margin:5px 0 0 42px;opacity:1;}
+    .nav-tabs {padding:4px;background:#f0f4f1;border-radius:10px;gap:3px;}
+    .tab-btn {color:#6b7b73;border:0;background:transparent;padding:10px 18px;border-radius:7px;font-size:13px;}
+    .tab-btn.active {background:var(--forest);color:#fff;box-shadow:0 2px 5px #153e3518;}
+    .tab-btn:hover:not(.active) {background:#e3ebe5;color:var(--forest);}
+    .auth-bar {color:var(--muted);gap:12px;font-size:11px;}
+    .auth-bar .btn {background:#edf4ef;color:var(--forest);border:1px solid var(--line);}
+    .kpi-bar {padding:18px 24px;background:transparent;border:0;gap:14px;}
+    .kpi-card {background:#fff;border:1px solid var(--line);border-left:3px solid var(--green);border-radius:10px;padding:15px 18px;box-shadow:0 2px 3px #153e3503;}
+    .kpi-label {font-size:10px;letter-spacing:.6px;color:#7b8981;line-height:1.5;}
+    .kpi-val {font-size:29px;letter-spacing:-1px;font-weight:650;color:var(--forest);margin-top:6px;}
+    .tab-panel {min-height:0;margin:0 24px 20px;gap:18px;}
+    #sidebar {flex:0 0 370px;width:370px;background:transparent;border:0;padding:0 6px 0 0;gap:14px;}
+    #map-container {border-radius:14px;overflow:hidden;border:1px solid var(--line);min-width:0;}
+    .map-toolbar {top:14px;right:14px;padding:11px 14px;gap:18px;border:1px solid var(--line);box-shadow:0 3px 15px #153e3512;color:var(--forest);font-size:11px;}
+    input {accent-color:var(--green);}
+    .btn {border-radius:7px;padding:9px 12px;font-weight:600;font-family:inherit;transition:background .15s,box-shadow .15s;}
+    .btn:focus-visible,.tab-btn:focus-visible,input:focus-visible,select:focus-visible {outline:3px solid #75c2a9;outline-offset:3px;}
+    .btn-primary {background:var(--green);font-size:13px;padding:13px;}
+    .btn-primary:hover {background:var(--forest);}
+    .btn-secondary {background:#e6ece7;color:#4c6357;}
+    .btn-collect {background:#e4f1e9;color:#216343;}
+    .btn-skip {background:#faefed;color:#a6554c;}
+    .bin-card {background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:12px;}
+    .bin-card > div:first-child {gap:10px;align-items:flex-start!important;}
+    .bin-card > div:first-child strong {font-size:13px!important;line-height:1.5;}
+    .badge {font-size:9px;padding:5px 7px;border-radius:5px;white-space:nowrap;line-height:1.2;}
+    .NEED_COLLECTION {background:#fbe9e6;color:#b8443c;}.NEAR_FULL {background:#fff3dd;color:#98651b;}.NORMAL {background:#e3f3e9;color:#22754b;}
+    .SENSOR_ERROR,.OFFLINE {background:#edf0f2;color:#66747e;}
+    .bin-measure {display:flex;align-items:center;justify-content:space-between;margin:15px 0 10px;}
+    .measure-label {display:block;font-size:10px;color:var(--muted);margin-bottom:4px;}
+    .bin-measure strong {font-size:29px;font-weight:650;letter-spacing:-1px;}.bin-measure small {font-size:14px;color:var(--muted);margin-left:2px;}
+    .distance-measure {text-align:right;}.distance-measure b {font-size:16px;font-weight:600;}
+    .fill-track {height:5px;background:#edf2ee;border-radius:5px;overflow:hidden;}.fill-track > div {height:100%;border-radius:5px;}
+    .bin-meta {display:flex;justify-content:space-between;color:#88938d;font-size:10px;margin:10px 0 14px;}
+    .sim-slider-row {background:#f5f7f4;padding:8px;font-size:10px;line-height:1.5;border-radius:6px;}
+    .priority-row {background:#faf7f0;border-color:#eee6d6;padding:8px;font-size:10px;}
+    .priority-alert {color:#a06b3d;}.hazard-alert {font-size:11px;}
+    .stats-box {background:#eaf4ed;border-left-color:var(--green);}
+    .analytics-wrapper {padding:0;gap:18px;align-content:start;min-width:0;grid-template-columns:minmax(0,1fr) minmax(0,1fr);}
+    .chart-box,.log-box {border:1px solid var(--line);border-radius:12px;padding:22px;box-shadow:none;min-width:0;}
+    .chart-box h3,.log-box h3 {color:var(--forest)!important;font-size:14px!important;font-weight:650;line-height:1.5;margin-bottom:18px!important;}
+    .log-box > div:has(> table) {overflow:auto!important;}
+    table {font-size:12px;}th {background:#f3f6f2;color:#63786a;font-size:10px;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;}
+    th,td {padding:12px;border-bottom-color:#edf1ed;}tbody tr:hover {background:#fafcf9;}
+    .p3-note {color:#87938b;font-size:11px;}.p3-filter {padding:12px 0;gap:12px;}
+    .p3-filter select {border-color:var(--line);border-radius:6px;padding:9px;background:#f8faf7;}
+    .mobile-wrapper {background:#eaf0e9;border-radius:14px;}.phone-mockup {border-color:#243f34;box-shadow:0 20px 50px #153e3520;max-height:760px;min-height:420px;}
+    .phone-notch {background:#243f34;}.phone-header {background:var(--green);}.phone-body {background:#f3f6f2;}.stop-step-card {border-left-color:var(--green);}
+    .modal-box {border:1px solid var(--line);border-radius:16px;padding:28px;box-shadow:0 24px 80px #153e3530;}
+    .modal-box h3 {color:var(--forest)!important;}.modal-box input {padding:12px;border-color:var(--line);font-family:inherit;}
+    ::-webkit-scrollbar {width:6px;height:6px;}::-webkit-scrollbar-thumb {background:#ccd8cf;border-radius:10px;}
+    @media(max-width:1100px) {header {gap:12px;padding:14px 18px;}.brand-sub {display:none;}.brand-tag {display:none;}.tab-btn {padding:10px 12px;}#sidebar {flex-basis:330px;width:330px;}.kpi-bar {padding:14px 18px;gap:8px;}.kpi-card {padding:12px;}.tab-panel {margin:0 18px 16px;gap:12px;}}
+    @media(max-width:760px) {body {height:auto;min-height:100dvh;overflow:auto;}header {position:relative;}.brand-title {font-size:21px;}.auth-bar {margin-left:auto;}.nav-tabs {order:3;width:100%;}.nav-tabs .tab-btn {flex:1;padding:10px 5px;font-size:12px;}.kpi-bar {grid-template-columns:repeat(2,minmax(0,1fr));}.kpi-bar .kpi-card:last-child {grid-column:span 2;}.kpi-val {font-size:25px;}.tab-panel.active {display:flex;flex-direction:column;overflow:visible;}#sidebar {width:100%;flex:auto;overflow:visible;padding:0;}#map-container {min-height:440px;flex:none;order:-1;}.map-toolbar {left:56px;right:10px;justify-content:flex-start;flex-wrap:wrap;gap:8px;font-size:10px;}#map {height:440px;}.analytics-wrapper {display:grid;grid-template-columns:minmax(0,1fr);overflow:visible;}.log-box {grid-column:span 1!important;}.p3-kpis {grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}.chart-box,.log-box {padding:16px;}.mobile-wrapper {padding:16px;}.phone-mockup {height:640px;width:100%;max-width:390px;}}
+
+
+    .bin-card {padding:15px 16px;}.bin-heading {display:flex;justify-content:space-between;gap:12px;align-items:flex-start;}.bin-heading strong {font-size:13px;line-height:1.5;}.compact-measure {display:flex;justify-content:space-between;align-items:baseline;margin:14px 0 9px;gap:12px;}.compact-measure > strong {font-size:27px;letter-spacing:-1px;}.compact-measure small {font-size:13px;color:#79897e;margin-left:2px;}.compact-measure > span {font-size:10px;color:#7c897f;}.priority-tag {color:#a47325;font-weight:600;}
+    .bin-actions {display:flex;gap:7px;margin:14px 0 0;}.bin-actions .btn {font-size:11px;padding:9px 11px;}.priority-toggle {background:transparent;color:#7d887d;margin-left:auto;border:1px solid #e5eae4;}.priority-toggle.is-priority {background:#fff3dd;color:#9a6a22;border-color:#f1ddb5;}
+    .bin-details {margin-top:13px;border-top:1px solid #edf1eb;padding-top:10px;}summary {cursor:pointer;color:#6c7e71;font-size:11px;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:8px;}summary::-webkit-details-marker {display:none;}summary::after {content:'+';font-size:16px;font-weight:400;}details[open] > summary::after {content:'−';}.details-content {padding-top:12px;}.device-facts {display:grid;grid-template-columns:1fr auto;gap:9px;font-size:11px;}.device-facts span {color:#819082;}.device-facts b,.device-facts code {font-weight:500;color:#425d49;}.device-facts + .sim-slider-row {margin-top:14px;}.bin-card .hazard-alert {padding:7px 9px;font-size:11px;}
+    .route-overview {background:#e4efe7;border:1px solid #d5e6da;border-radius:12px;padding:16px;color:#244e37;}.route-topline {display:flex;justify-content:space-between;align-items:center;font-size:13px;}.model-tag {font-size:9px;font-weight:500;background:#d6e5da;border-radius:4px;padding:4px 6px;color:#53735b;}.route-numbers {margin:14px 0 8px;display:flex;justify-content:space-between;align-items:baseline;gap:10px;}.route-numbers strong {font-size:28px;letter-spacing:-1px;}.route-numbers small {font-size:13px;font-weight:400;}.route-numbers span {font-size:11px;}.route-origin {font-size:11px;color:#607a65;line-height:1.5;}.route-details {margin-top:12px;padding-top:10px;border-top:1px solid #ccded0;}.route-sequence {font-size:11px;line-height:1.7;word-break:break-word;margin-top:0;}
+    .phone-header {padding:20px;}.phone-notch {font-size:9px;letter-spacing:1px;padding:10px;}.phone-body {padding:16px;}.driver-summary {display:flex;flex-direction:column;gap:10px;padding:3px 2px 18px;font-size:11px;color:#748576;}.driver-summary > span:first-child {display:flex;justify-content:space-between;}.driver-summary strong {font-size:29px;font-weight:650;color:#204932;}.driver-summary small {font-size:13px;font-weight:400;color:#748576;}.driver-stop {background:white;border:1px solid #e1e8e0;border-radius:10px;padding:16px;margin-bottom:12px;}.driver-stop.next-stop {border-color:#7fb497;box-shadow:0 2px 8px #24543808;}.stop-label {display:flex;justify-content:space-between;font-size:9px;color:#879084;letter-spacing:.5px;}.stop-label b {font-size:12px;color:#50775b;letter-spacing:0;}.driver-stop h3 {font-size:15px;line-height:1.5;color:#254531;margin:12px 0 16px;}.driver-actions {display:flex;gap:8px;}.driver-actions .btn {font-size:11px;}.driver-actions .btn-collect {flex:1;background:#187256;color:white;}.driver-actions .btn-skip {background:#f4f5f1;color:#7b8172;}
+
   </style>
 </head>
 <body>
 
   <header>
     <div>
-      <div class="brand-title">🗑️ HỆ THỐNG QUẢN LÝ & ĐIỀU PHỐI RÁC THẢI THÔNG MINH (IOT)</div>
-      <div class="brand-sub">Nhóm 15 - ĐH Công Thương TP.HCM (HUIT) | GVHD: ThS. Đinh Huy Hoàng</div>
+      <div class="brand-title"><span class="brand-mark">W</span> WasteFlow <span class="brand-tag">ĐIỀU PHỐI IoT</span></div>
+      <div class="brand-sub">Giám sát & điều phối thu gom</div>
     </div>
     <div class="nav-tabs">
-      <button class="tab-btn active" onclick="switchTab('tab-dispatch', this)">🖥️ 1. Trung Tâm Điều Phối GIS</button>
-      <button class="tab-btn" onclick="switchTab('tab-driver', this)">📱 2. App Di Động Tài Xế</button>
-      <button class="tab-btn" onclick="switchTab('tab-analytics', this)">📊 3. Biểu Đồ & Nhật Ký IoT</button>
+      <button class="tab-btn active" onclick="switchTab('tab-dispatch', this)">Điều phối</button>
+      <button class="tab-btn" onclick="switchTab('tab-driver', this)">Tài xế</button>
+      <button class="tab-btn" onclick="switchTab('tab-analytics', this)">Phân tích & nhật ký</button>
     </div>
     <div class="auth-bar">
       <span id="p3-session-label">Chưa đăng nhập</span>
@@ -122,11 +193,11 @@
   <!-- Thanh chỉ số KPI -->
   <div class="kpi-bar">
     <div class="kpi-card">
-      <div class="kpi-label">Tổng số nút thùng rác</div>
+      <div class="kpi-label">Tổng số thùng</div>
       <div class="kpi-val" id="kpi-total">6</div>
     </div>
     <div class="kpi-card" style="border-left-color:#d32f2f;">
-      <div class="kpi-label">Cần thu gom (>=80%)</div>
+      <div class="kpi-label">Cần thu gom ≥80%</div>
       <div class="kpi-val" style="color:#d32f2f;" id="kpi-full">0</div>
     </div>
     <div class="kpi-card" style="border-left-color:#f57c00;">
@@ -134,11 +205,11 @@
       <div class="kpi-val" style="color:#f57c00;" id="kpi-near">0</div>
     </div>
     <div class="kpi-card" style="border-left-color:#475569;">
-      <div class="kpi-label">Lỗi cảm biến / Offline</div>
+      <div class="kpi-label">Thiết bị cần kiểm tra</div>
       <div class="kpi-val" style="color:#475569;" id="kpi-err">0</div>
     </div>
     <div class="kpi-card" style="border-left-color:#2e7d32;">
-      <div class="kpi-label">Giảm so với tuần tự (mô hình)</div>
+      <div class="kpi-label">Giảm quãng đường · mô hình</div>
       <div class="kpi-val" style="color:#2e7d32;" id="kpi-saved">0%</div>
     </div>
   </div>
@@ -147,12 +218,12 @@
   <div id="tab-dispatch" class="tab-panel active">
     <div id="sidebar">
       <div style="display:flex; gap:6px;">
-        <button class="btn btn-primary" onclick="optimizeRoute()">🚚 LẬP TUYẾN (DIJKSTRA + TSP 2-OPT)</button>
-        <button class="btn btn-secondary" style="width:140px;" onclick="resetTrip()">🔄 Reset chuyến</button>
+        <button class="btn btn-primary" onclick="optimizeRoute()">Lập tuyến thu gom</button>
+        <button class="btn btn-secondary" style="width:140px;" onclick="resetTrip()">Đặt lại</button>
       </div>
       <div id="route-stats"></div>
       <div style="font-size:12px; font-weight:700; color:#475569; margin-top:4px;">
-        📡 DANH SÁCH NÚT IOT & BỘ GIẢ LẬP ĐA NÚT:
+        THÙNG RÁC TRONG KHU VỰC
       </div>
       <div id="bin-list"></div>
     </div>
@@ -161,11 +232,11 @@
       <div class="map-toolbar">
         <label style="cursor:pointer; font-weight:600;">
           <input type="checkbox" id="chk-graph" checked onchange="toggleGraphLayer()" />
-          🕸️ Hiển thị Đồ thị cục bộ G=(V,E)
+          Đồ thị cục bộ
         </label>
         <label style="cursor:pointer; font-weight:600;">
           <input type="checkbox" id="chk-osrm" checked onchange="optimizeRoute()" />
-          🛣️ Vẽ đường theo OSRM (tham khảo)
+          Đường OSRM tham khảo
         </label>
       </div>
       <div id="map"></div>
@@ -176,17 +247,17 @@
   <div id="tab-driver" class="tab-panel">
     <div class="mobile-wrapper">
       <div class="phone-mockup">
-        <div class="phone-notch">📶 5G • Vị trí mô phỏng • 100% 🔋</div>
+        <div class="phone-notch">CHẾ ĐỘ TÀI XẾ · MÔ PHỎNG</div>
         <div class="phone-header">
-          <div style="font-size:15px; font-weight:700;">🚛 ỨNG DỤNG TÀI XẾ THU GOM</div>
+          <div style="font-size:15px; font-weight:700;">Lịch thu gom</div>
           <div style="font-size:12px; opacity:0.9;">Phương tiện: Xe thu gom #01 - Khu vực Tân Phú</div>
         </div>
         <div class="phone-body">
-          <button class="btn btn-primary" style="margin-bottom:10px;" onclick="optimizeRoute()">🔄 Đồng bộ lộ trình từ Máy chủ</button>
+          <button class="btn btn-primary" style="margin-bottom:10px;" onclick="optimizeRoute()">Cập nhật lộ trình</button>
           <div id="driver-route-summary"></div>
           <div id="driver-stops-list">
             <div style="text-align:center; color:#64748b; padding:30px 10px; font-size:13px;">
-              Bấm "Lập tuyến" hoặc "Đồng bộ lộ trình" để nhận danh sách các điểm dừng cần thu gom.
+              Chưa có lộ trình. Chọn “Cập nhật lộ trình” để bắt đầu.
             </div>
           </div>
         </div>
@@ -198,15 +269,15 @@
   <div id="tab-analytics" class="tab-panel">
     <div class="analytics-wrapper">
       <div class="chart-box">
-        <h3 style="margin-top:0; font-size:14px; color:#0d47a1;">📊 Biểu đồ Mức đầy (%) của 6 Thùng rác so với Ngưỡng (80%)</h3>
+        <h3 style="margin-top:0; font-size:14px; color:#0d47a1;">Mức đầy theo thùng · Ngưỡng thu gom 80%</h3>
         <canvas id="fillChart" height="140"></canvas>
       </div>
       <div class="chart-box">
-        <h3 style="margin-top:0; font-size:14px; color:#1b5e20;">📉 So sánh Quãng đường Lộ trình (Mét): Tuần tự vs. Nearest Neighbor vs. 2-Opt</h3>
+        <h3 style="margin-top:0; font-size:14px; color:#1b5e20;">So sánh quãng đường · mét</h3>
         <canvas id="routeChart" height="140"></canvas>
       </div>
       <div class="log-box">
-        <h3 style="margin:0 0 9px;color:#0d47a1;font-size:15px;">Thống kê vận hành (Giai đoạn 3 · tài khoản JWT)</h3>
+        <h3 style="margin:0 0 9px;color:#0d47a1;font-size:15px;">Tổng quan vận hành</h3>
         <p class="p3-note" id="p3-stats-status">Đăng nhập bằng tài khoản được tạo qua p3_setup.py để xem dữ liệu có phân quyền.</p>
         <div class="p3-kpis">
           <div class="kpi-card"><div class="kpi-label">Mẫu đo / khung giờ</div><div class="kpi-val" id="p3-messages">—</div></div>
@@ -216,7 +287,7 @@
         </div>
       </div>
       <div class="log-box">
-        <h3 style="margin:0 0 10px;color:#0d47a1;font-size:15px;">Lịch sử mức đầy theo thời gian (dữ liệu ghi nhận thật)</h3>
+        <h3 style="margin:0 0 10px;color:#0d47a1;font-size:15px;">Lịch sử mức đầy</h3>
         <div class="p3-filter">
           <label for="p3-bin">Thùng</label>
           <select id="p3-bin" onchange="loadP3Analytics()">
@@ -235,7 +306,7 @@
         <p class="p3-note">Chỉ tính bản tin cảm biến hợp lệ đã lưu trong SQLite; khoảng trống không có bản tin sẽ không được tự tạo số liệu. Đây là lịch sử nhận tại máy chủ, chưa phải dịch vụ Cloud đang triển khai thực tế.</p>
       </div>
       <div class="log-box" style="grid-column:span 2;">
-        <h3 style="margin-top:0;font-size:14px;color:#b45309;">🚨 Nhật ký ưu tiên, cảnh báo & xử lý</h3>
+        <h3 style="margin-top:0;font-size:14px;color:#b45309;">Sự kiện & cảnh báo</h3>
         <div style="max-height:230px;overflow-y:auto;">
           <table class="event-table">
             <thead><tr><th>Giờ</th><th>Thùng</th><th>Sự kiện</th><th>Chi tiết</th></tr></thead>
@@ -245,7 +316,7 @@
       </div>
       <div class="log-box">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-          <h3 style="margin:0; font-size:14px; color:#0d47a1;">📝 Nhật ký Bản tin JSON Thời gian thực (Telemetry Logs - Kiểm tra chống trùng message_id)</h3>
+          <h3 style="margin:0; font-size:14px; color:#0d47a1;">Nhật ký truyền dữ liệu</h3>
           <button class="btn btn-secondary" onclick="loadLogs()">🔄 Cập nhật Log</button>
         </div>
         <div style="max-height:220px; overflow-y:auto;">
@@ -567,7 +638,7 @@
         else if (b.status === 'NEAR_FULL') countNear++;
 
         const badgeClass = hasFire ? 'FIRE_DETECTED' : hasTilt ? 'TILT_DETECTED' : isErr ? b.sensor_status : b.status;
-        const badgeText = hasFire ? 'NGUY CƠ CHÁY' : hasTilt ? 'THÙNG NGHIÊNG' : isErr ? `[LỖI: ${b.sensor_status}]` : statusLabels[b.status];
+        const badgeText = hasFire ? 'Nguy cơ cháy' : hasTilt ? 'Thùng nghiêng' : isErr ? (b.sensor_status === 'OFFLINE' ? 'Mất kết nối' : 'Lỗi cảm biến') : b.status === 'NEED_COLLECTION' ? 'Cần thu gom' : b.status === 'NEAR_FULL' ? 'Gần đầy' : 'Bình thường';
         const color = hasFire ? '#b91c1c' : hasTilt ? '#b45309' : isErr ? '#475569' : (b.status === 'NEED_COLLECTION' ? '#d32f2f' : (b.status === 'NEAR_FULL' ? '#f57c00' : '#2e7d32'));
 
         if (markers[b.bin_id]) map.removeLayer(markers[b.bin_id]);
@@ -589,15 +660,6 @@
 
         const alertHtml = (b.alert_reasons || []).map(x => escapeHtml(x)).join(' • ');
         const hazardHtml = `${hasFire ? '<div class="hazard-alert fire">🔥 NGUY CƠ CHÁY — liên hệ đơn vị xử lý an toàn; không tự điều xe rác tới hiện trường.</div>' : ''}${hasTilt ? '<div class="hazard-alert tilt">⚠️ THÙNG BỊ NGHIÊNG/ĐỔ — cần kiểm tra hiện trường.</div>' : ''}`;
-        const priorityControlsHtml = b.data_source === 'WOKWI'
-          ? `<div class="priority-row" style="background:#e0f2fe;border-color:#bae6fd;color:#075985;font-size:11px;">
-               🚨 Ưu tiên BIN_01 được kích hoạt bằng nút khẩn cấp Wokwi.
-             </div>`
-          : `<div class="priority-row">
-               <span style="font-size:11px;"><b>🚨 Ưu tiên thu gom:</b><br>${b.is_priority ? 'ĐANG BẬT' : 'Đã tắt'}</span>
-               <button class="btn" style="background:${b.is_priority ? '#cbd5e1' : '#c2410c'};color:${b.is_priority ? '#0f172a' : '#fff'};"
-                 onclick="setBinPriority('${b.bin_id}', ${!b.is_priority})">${b.is_priority ? 'Hủy ưu tiên' : 'Bật ưu tiên'}</button>
-             </div>`;
         const sliderVal = b.distance_cm > 0 ? b.distance_cm : 50;
         // P1-2: Only simulated bins have manual controls. Wokwi BIN_01 is read-only here.
         const simControlsHtml = b.data_source === 'WOKWI'
@@ -605,38 +667,28 @@
                <span>📡 Wokwi ESP32 (chỉ đọc). Đổi khoảng cách tại cảm biến HC-SR04 trên Wokwi.</span>
              </div>`
           : `<div class="sim-slider-row">
-               <span>🎛️ Giả lập khoảng cách:</span>
+               <span>Mô phỏng:</span>
                <input type="range" min="20" max="100" value="${sliderVal}" style="flex:1;"
                  onmousedown="isInteractingSlider=true"
                  onmouseup="isInteractingSlider=false"
                  onchange="simulateBin('${b.bin_id}', this.value, 'OK')" />
                <button class="btn" style="background:#e2e8f0; padding:3px 6px; font-size:10px;"
-                 onclick="simulateBin('${b.bin_id}', -1, 'SENSOR_ERROR')">⚡ Báo lỗi CB</button>
+                 onclick="simulateBin('${b.bin_id}', -1, 'SENSOR_ERROR')">Lỗi cảm biến</button>
              </div>`;
 
+        const cleanName = b.name.replace(/\s*\((?:Wokwi[^)]*|mô phỏng)\)/gi, '');
+        const age = b.seconds_ago === null ? 'Chưa cập nhật' : b.seconds_ago < 60 ? 'Vừa cập nhật' : b.seconds_ago < 3600 ? Math.floor(b.seconds_ago / 60) + ' phút trước' : Math.floor(b.seconds_ago / 3600) + ' giờ trước';
         listEl.innerHTML += `
-          <div class="bin-card">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <strong style="font-size:13px;">${b.name} ${b.is_priority ? '🔥' : ''}</strong>
-              <span class="badge ${badgeClass}">${badgeText}</span>
-            </div>
-            <div style="font-size:12px; margin-top:5px; color:#334155;">
-              📏 Khoảng cách: <b>${b.distance_cm} cm</b> | 📊 Mức đầy: <b>${b.fill_percent}%</b> (Lần đo LT: ${b.consecutive_count})<br>
-              ⏱️ Cập nhật: ${b.seconds_ago}s trước • Thiết bị: <code>${b.device_id}</code>
-            </div>
-            <!-- P1-2: Wokwi data is read-only here; simulated bins keep sliders. -->
-            ${simControlsHtml}
-            ${priorityControlsHtml}
-            ${hazardHtml}
-            ${alertHtml ? `<div class="priority-alert">🔔 ${alertHtml}</div>` : ''}
+          <article class="bin-card">
+            <div class="bin-heading"><strong>${escapeHtml(cleanName)}</strong><span class="badge ${badgeClass}">${badgeText}</span></div>
+            <div class="compact-measure"><strong>${b.fill_percent >= 0 ? b.fill_percent + '<small>%</small>' : '—'}</strong><span>${age}${b.is_priority ? ' · <b class="priority-tag">Ưu tiên</b>' : ''}</span></div>
+            <div class="fill-track"><div style="width:${Math.max(0,Math.min(100,b.fill_percent))}%;background:${color}"></div></div>
+            ${hasFire ? '<div class="hazard-alert fire">Nguy cơ cháy do khí · Yêu cầu xử lý an toàn</div>' : ''}
+            ${hasTilt ? '<div class="hazard-alert tilt">Thùng nghiêng · Cần kiểm tra</div>' : ''}
             ${tripStatusHtml}
-            ${b.trip_info && b.trip_info.action_status === 'COLLECTED' ? `<div style="font-size:11px;color:#0369a1;margin-top:5px;">✅ Đã xác nhận thu gom; số đo vẫn là lần đo cảm biến gần nhất.</div>` : ''}
-            <div style="margin-top:6px; font-size:11px; color:#64748b;">Chỉ xác nhận đã thu gom khi xe thực sự tới thùng (vị trí mô phỏng sẽ chuyển tới đây).</div>
-            <div style="margin-top:6px;">
-              <button class="btn btn-collect" onclick="confirmStop('${b.bin_id}', 'COLLECTED')">✅ Xác nhận đã thu gom</button>
-              <button class="btn btn-skip" onclick="openSkipModal('${b.bin_id}')">⚠️ Bỏ qua điểm này</button>
-            </div>
-          </div>
+            <div class="bin-actions"><button class="btn btn-collect" onclick="confirmStop('${b.bin_id}', 'COLLECTED')">Đã thu gom</button><button class="btn btn-skip" onclick="openSkipModal('${b.bin_id}')">Bỏ qua</button>${b.data_source !== 'WOKWI' ? `<button class="btn priority-toggle ${b.is_priority ? 'is-priority' : ''}" onclick="setBinPriority('${b.bin_id}', ${!b.is_priority})">${b.is_priority ? 'Hủy ưu tiên' : 'Ưu tiên'}</button>` : ''}</div>
+            <details class="bin-details" data-bin="${b.bin_id}" ${openBinDetails.has(b.bin_id) ? 'open' : ''} ontoggle="this.open ? openBinDetails.add(this.dataset.bin) : openBinDetails.delete(this.dataset.bin)"><summary>Chi tiết${b.data_source !== 'WOKWI' ? ' & mô phỏng' : ' thiết bị'}</summary><div class="details-content"><div class="device-facts"><span>Thiết bị</span><code>${escapeHtml(b.device_id)}</code><span>Khoảng cách</span><b>${b.distance_cm >= 0 ? b.distance_cm + ' cm' : 'Không hợp lệ'}</b><span>Nguồn</span><b>${b.data_source === 'WOKWI' ? 'ESP32 / Wokwi' : 'Mô phỏng'}</b></div>${simControlsHtml}${b.data_source === 'WOKWI' ? '<p class="p3-note">Ưu tiên được điều khiển bằng nút trên thiết bị.</p>' : ''}${alertHtml ? `<p class="p3-note">${alertHtml}</p>` : ''}</div></details>
+          </article>
         `;
       });
 
@@ -655,6 +707,7 @@
 
     // P1-1: Admin key stays in page memory only (not embedded or stored in browser storage).
     // P3: JWT operator/admin role takes precedence. Legacy key fallback is for P1/P2 demos only.
+    const openBinDetails = new Set();
     let adminApiKey = null;
     async function adminPost(url, body = undefined) {
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -798,19 +851,7 @@
       if (requestId !== routeRequestId) return;
       const modelDistance = v => Number(v).toLocaleString('vi-VN');
       statsEl.innerHTML = `
-        <div class="stats-box">
-          <b>📌 KẾT QUẢ LẬP TUYẾN (DIJKSTRA + NN + 2-OPT)</b><br>
-          • 🧭 Vị trí xe mô phỏng (không phải GPS): <b>${escapeHtml(data.current_location_name)} (${escapeHtml(data.current_location_id)})</b><br>
-          • Số thùng còn lại: <b>${data.remaining_bins}</b>${data.return_only ? ' • Chỉ còn chặng về DEPOT' : ''}<br>
-          • <b>SỐ LIỆU TRÊN ĐỒ THỊ CỤC BỘ (ước tính):</b><br>
-          • Tuyến theo thứ tự đầu vào: <b>${modelDistance(data.unoptimized_distance_m)} m</b><br>
-          • Nearest Neighbor: <b>${modelDistance(data.nn_distance_m)} m</b><br>
-          • NN + 2-opt: <b style="color:#1565c0;">${modelDistance(data.optimized_distance_m)} m</b><br>
-          • Giảm so với thứ tự đầu vào: <b>${data.saved_percent}%</b> (không phải tỷ lệ tiết kiệm thực tế; 2-opt không đảm bảo tối ưu toàn cục).<br>
-          • <b>ĐƯỜNG HIỂN THỊ:</b> <span id="route-osrm-metric">${osrmMetricInfo}</span><br>
-          • <span style="font-size:11px;color:#475569;">${modelWarning}</span><br>
-          • Thứ tự ghé thăm:<br><span style="color:#d32f2f;font-weight:700;">${stopNames}</span>
-        </div>
+        <section class="route-overview"><div class="route-topline"><b>Tuyến thu gom</b><span class="model-tag">Ước tính</span></div><div class="route-numbers"><strong>${modelDistance(data.optimized_distance_m)}<small> m</small></strong><span>${data.remaining_bins} thùng cần thu gom</span></div><div class="route-origin">Xuất phát: ${escapeHtml(data.current_location_name)}</div><details class="route-details"><summary>Chi tiết tuyến</summary><div class="details-content"><p class="route-sequence">${stopNames}</p><div class="device-facts"><span>Thứ tự ban đầu</span><b>${modelDistance(data.unoptimized_distance_m)} m</b><span>Nearest Neighbor</span><b>${modelDistance(data.nn_distance_m)} m</b><span>Giảm trên mô hình</span><b>${data.saved_percent}%</b></div><p class="p3-note">Đồ thị cục bộ · Dijkstra, NN và 2-opt. Vị trí xe suy ra từ xác nhận, không phải GPS. Chưa bao gồm giao thông thực tế.</p><p class="p3-note" id="route-osrm-metric">${osrmMetricInfo}</p><p class="p3-note">${modelWarning}</p></div></details></section>
       `;
       if (routeLayer) map.removeLayer(routeLayer);
       if (Array.isArray(polyCoords) && polyCoords.length >= 2) {
@@ -836,34 +877,10 @@
         return;
       }
 
-      sumEl.innerHTML = `
-        <div class="stats-box" style="margin-bottom:10px;">
-          <b>Điểm xuất phát hiện tại: ${escapeHtml(data.current_location_name)} (${data.current_location_id})</b><br>
-          <span style="font-size:11px; color:#64748b;">Vị trí suy ra từ xác nhận thu gom, chưa tích hợp GPS.</span><br>
-          <b>Quãng đường còn lại trên đồ thị mô hình: ${data.optimized_distance_m} m</b> (Giảm ${data.saved_percent}% so với thứ tự đầu vào)<br>
-          Số chặng di chuyển: <b>${data.legs.length} chặng</b>
-        </div>
-      `;
-
-      listEl.innerHTML = data.legs.map(leg => {
-        const isDepot = (leg.to_id === 'DEPOT');
-        return `
-          <div class="stop-step-card" style="border-left-color:${isDepot ? '#2e7d32' : '#d32f2f'};">
-            <div style="font-size:13px; font-weight:700; color:#0f172a;">
-              Chặng ${leg.step}: ${leg.from_id} ➔ ${leg.to_id} (${leg.distance_m} m)
-            </div>
-            <div style="font-size:12px; color:#475569; margin-top:3px;">
-              📍 Điểm đến: <b>${leg.to_name}</b><br>
-              🛣️ Lộ trình Dijkstra: <code>${leg.via_nodes}</code>
-            </div>
-            ${!isDepot ? `
-              <div style="margin-top:8px;">
-                <button class="btn btn-collect" onclick="confirmStop('${leg.to_id}', 'COLLECTED')">✅ Đã thu gom</button>
-                <button class="btn btn-skip" onclick="openSkipModal('${leg.to_id}')">⚠️ Báo sự cố / Bỏ qua</button>
-              </div>
-            ` : ''}
-          </div>
-        `;
+      sumEl.innerHTML = `<div class="driver-summary"><span>Lộ trình hôm nay <b class="model-tag">Mô phỏng</b></span><strong>${Number(data.optimized_distance_m).toLocaleString('vi-VN')} <small>m còn lại</small></strong><span>${data.legs.length} chặng · ${escapeHtml(data.current_location_name)}</span></div>`;
+      listEl.innerHTML = data.legs.map((leg,index) => {
+        const isDepot = leg.to_id === 'DEPOT';
+        return `<article class="driver-stop ${index === 0 ? 'next-stop' : ''}"><div class="stop-label"><span>${index === 0 ? 'ĐIỂM TIẾP THEO' : 'ĐIỂM ' + leg.step}</span><b>${Number(leg.distance_m).toLocaleString('vi-VN')} m</b></div><h3>${escapeHtml(leg.to_name)}</h3>${!isDepot ? `<div class="driver-actions"><button class="btn btn-collect" onclick="confirmStop('${leg.to_id}', 'COLLECTED')">Xác nhận thu gom</button><button class="btn btn-skip" onclick="openSkipModal('${leg.to_id}')">Báo sự cố</button></div>` : '<p class="p3-note">Trở về điểm tập kết</p>'}<details class="route-details"><summary>Xem chặng</summary><p class="p3-note">${escapeHtml(leg.from_id)} → ${escapeHtml(leg.to_id)}<br>${escapeHtml(String(leg.via_nodes))}</p></details></article>`;
       }).join('');
     }
 
