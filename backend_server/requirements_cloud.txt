@@ -1,0 +1,4 @@
+# Render Free build command: pip install -r backend_server/requirements_cloud.txt
+-r requirements_p3.txt
+fastapi>=0.115,<1
+uvicorn>=0.30,<1

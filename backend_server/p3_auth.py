@@ -58,6 +58,12 @@ def bootstrap_signing_secret(auth_file: Path = AUTH_FILE) -> None:
 
 
 def _signing_secret() -> str:
+    # P5: Render env secret takes precedence over the local-only JSON file.
+    env_secret = os.getenv("IOT_P3_JWT_SECRET")
+    if env_secret is not None:
+        if len(env_secret) < 48:
+            raise HTTPException(status_code=503, detail="JWT secret must have 48+ characters")
+        return env_secret
     try:
         config = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
         secret = config["jwt_secret"]

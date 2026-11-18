@@ -12,10 +12,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict, StrictBool, model_validator
 if __package__:
-    from .p3_auth import init_auth_tables, authenticate, issue_token, verify_bearer
+    from .p3_auth import init_auth_tables, authenticate, issue_token, verify_bearer, add_user
 else:
     # P2 tests load app.py into an isolated temporary directory as a module.
-    from p3_auth import init_auth_tables, authenticate, issue_token, verify_bearer
+    from p3_auth import init_auth_tables, authenticate, issue_token, verify_bearer, add_user
 
 app = FastAPI(title="Hệ Thống Quản Lý Rác Thải Thông Minh - Nhóm 15 HUIT")
 
@@ -32,18 +32,30 @@ HTML_FILE = os.path.join(BASE_DIR, "index.html")
 LOCK_READS = os.getenv("IOT_P3_LOCK_READS", "0") == "1"
 DISABLE_LEGACY_ADMIN = os.getenv("IOT_P3_DISABLE_LEGACY_ADMIN", "0") == "1"
 
-# P1-1: Demo-only keys generated on this PC, never commit this JSON to Git.
+# P5: Render supplies secrets via environment variables. Local P1 keys still
+# work unchanged for Wokwi and existing Windows development/test setups.
 LOCAL_KEYS_FILE = os.path.join(BASE_DIR, "p1_local_keys.json")
-try:
-    with open(LOCAL_KEYS_FILE, "r", encoding="utf-8") as _f:
-        _local_keys = json.load(_f)
-except (FileNotFoundError, ValueError) as _exc:
-    raise RuntimeError("P1-1: Missing/invalid backend_server/p1_local_keys.json. Run apply_p1_1.py first.") from _exc
+_cloud_device_key = os.getenv("IOT_DEVICE_API_KEY")
+_cloud_admin_key = os.getenv("IOT_ADMIN_API_KEY")
+if _cloud_device_key is not None or _cloud_admin_key is not None:
+    if not _cloud_device_key or not _cloud_admin_key:
+        raise RuntimeError("P5: Set BOTH IOT_DEVICE_API_KEY and IOT_ADMIN_API_KEY.")
+    DEVICE_API_KEY = _cloud_device_key
+    ADMIN_API_KEY = _cloud_admin_key
+else:
+    try:
+        with open(LOCAL_KEYS_FILE, "r", encoding="utf-8") as _f:
+            _local_keys = json.load(_f)
+    except (FileNotFoundError, ValueError) as _exc:
+        raise RuntimeError(
+            "P5: Missing P1 local keys. For Cloud, set IOT_DEVICE_API_KEY "
+            "and IOT_ADMIN_API_KEY in Render environment variables."
+        ) from _exc
+    DEVICE_API_KEY = _local_keys.get("device_api_key", "")
+    ADMIN_API_KEY = _local_keys.get("admin_api_key", "")
 
-DEVICE_API_KEY = _local_keys.get("device_api_key", "")
-ADMIN_API_KEY = _local_keys.get("admin_api_key", "")
 if not isinstance(DEVICE_API_KEY, str) or not isinstance(ADMIN_API_KEY, str) or min(len(DEVICE_API_KEY), len(ADMIN_API_KEY)) < 32:
-    raise RuntimeError("P1-1: Invalid local API keys; both must have at least 32 characters.")
+    raise RuntimeError("P5: Both API keys must have at least 32 characters.")
 
 
 def require_device_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
@@ -73,6 +85,11 @@ def require_read_access(authorization: Optional[str] = Header(default=None, alia
     # Stage1/2 demo can keep public reads; deploy with LOCK_READS=1 for JWT RBAC.
     if LOCK_READS:
         return verify_bearer(DB_FILE, authorization, {"viewer", "operator", "admin"})
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.get("/api/ui/config")
@@ -225,7 +242,30 @@ def init_db():
     conn.close()
     init_auth_tables(DB_FILE)
 
+
+def _bootstrap_cloud_admin():
+    """Create the initial Render admin once; never reset an existing account."""
+    username = os.getenv("IOT_BOOTSTRAP_ADMIN_USERNAME", "")
+    password = os.getenv("IOT_BOOTSTRAP_ADMIN_PASSWORD", "")
+    if not username and not password:
+        return  # Local P1/P2/P3 behavior remains unchanged.
+    if not username or not password:
+        raise RuntimeError("P5: Set BOTH bootstrap admin username and password.")
+    if len(password) < 12:
+        raise RuntimeError("P5: Bootstrap admin password must have 12+ characters.")
+    with sqlite3.connect(DB_FILE) as db:
+        existing = db.execute(
+            "SELECT role FROM dashboard_users WHERE username = ?", (username,)
+        ).fetchone()
+    if existing:
+        if existing[0] != "admin":
+            raise RuntimeError("P5: Existing bootstrap username has a non-admin role.")
+        return
+    add_user(DB_FILE, username, password, role="admin")
+
+
 init_db()
+_bootstrap_cloud_admin()
 
 # P1-1: Reject malformed or inconsistent telemetry BEFORE writing to SQLite.
 class TelemetryInput(BaseModel):
