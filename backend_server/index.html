@@ -10,10 +10,21 @@
     * { box-sizing: border-box; }
     body { margin: 0; font-family: 'Segoe UI', Tahoma, sans-serif; background: #eef2f6; color: #1e293b; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
     /* Header & Navigation Tabs */
-    header { background: linear-gradient(90deg, #0d47a1, #1565c0); color: #fff; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.18); z-index: 2000; }
+    header { background: linear-gradient(90deg, #0d47a1, #1565c0); color: #fff; padding: 10px 20px; display: flex; flex-wrap:wrap; gap:10px; justify-content: space-between; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,0.18); z-index: 2000; }
     .brand-title { font-size: 17px; font-weight: 700; letter-spacing: 0.3px; }
     .brand-sub { font-size: 12px; opacity: 0.9; }
     .nav-tabs { display: flex; gap: 8px; }
+    .auth-bar { display:flex;align-items:center;gap:7px;font-size:12px; }
+    .auth-bar .btn {background:#e2e8f0;color:#0f172a;}
+    .p3-filter {display:flex;flex-wrap:wrap;align-items:center;gap:9px;font-size:12px;margin-bottom:10px;}
+    .p3-filter select {padding:7px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#1e293b;}
+    .p3-kpis {display:grid;grid-template-columns:repeat(4,minmax(110px,1fr));gap:10px;}
+    .p3-kpis .kpi-card {min-width:0;}
+    .p3-note {font-size:12px;color:#64748b;line-height:1.6;}
+    #login-modal {display:none;position:fixed;inset:0;background:rgba(15,23,42,0.7);z-index:10010;align-items:center;justify-content:center;}
+    #login-modal .modal-box {width:min(380px,92vw);}
+    #login-modal label {display:block;font-size:12px;font-weight:700;color:#334155;margin-top:12px;}
+    #login-modal input {margin:5px 0 0;}
     .tab-btn { background: rgba(255,255,255,0.15); color: #fff; border: 1px solid rgba(255,255,255,0.3); padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; transition: 0.2s; }
     .tab-btn.active, .tab-btn:hover { background: #fff; color: #0d47a1; }
 
@@ -81,6 +92,12 @@
     #skip-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 9999; align-items: center; justify-content: center; }
     .modal-box { background: #fff; padding: 18px; border-radius: 10px; width: 360px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
     .modal-box input { width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; margin: 10px 0; font-size: 13px; }
+    @media(max-width:850px) {
+      .analytics-wrapper {grid-template-columns:1fr;}
+      .log-box {grid-column:span 1!important;}
+      .p3-kpis {grid-template-columns:repeat(2,minmax(120px,1fr));}
+      .nav-tabs {flex-wrap:wrap;}
+    }
   </style>
 </head>
 <body>
@@ -94,6 +111,11 @@
       <button class="tab-btn active" onclick="switchTab('tab-dispatch', this)">🖥️ 1. Trung Tâm Điều Phối GIS</button>
       <button class="tab-btn" onclick="switchTab('tab-driver', this)">📱 2. App Di Động Tài Xế</button>
       <button class="tab-btn" onclick="switchTab('tab-analytics', this)">📊 3. Biểu Đồ & Nhật Ký IoT</button>
+    </div>
+    <div class="auth-bar">
+      <span id="p3-session-label">Chưa đăng nhập</span>
+      <button id="p3-login-button" class="btn" onclick="openLoginModal()">Đăng nhập</button>
+      <button id="p3-logout-button" class="btn" onclick="logoutDashboard()" style="display:none;">Đăng xuất</button>
     </div>
   </header>
 
@@ -183,6 +205,35 @@
         <h3 style="margin-top:0; font-size:14px; color:#1b5e20;">📉 So sánh Quãng đường Lộ trình (Mét): Tuần tự vs. Nearest Neighbor vs. 2-Opt</h3>
         <canvas id="routeChart" height="140"></canvas>
       </div>
+      <div class="log-box">
+        <h3 style="margin:0 0 9px;color:#0d47a1;font-size:15px;">Thống kê vận hành (Giai đoạn 3 · tài khoản JWT)</h3>
+        <p class="p3-note" id="p3-stats-status">Đăng nhập bằng tài khoản được tạo qua p3_setup.py để xem dữ liệu có phân quyền.</p>
+        <div class="p3-kpis">
+          <div class="kpi-card"><div class="kpi-label">Mẫu đo / khung giờ</div><div class="kpi-val" id="p3-messages">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Sự kiện cảnh báo</div><div class="kpi-val" id="p3-events">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Bản tin trễ ≥30s</div><div class="kpi-val" id="p3-delayed">—</div></div>
+          <div class="kpi-card"><div class="kpi-label">Đang cảnh báo cháy / nghiêng</div><div class="kpi-val" id="p3-hazards">—</div></div>
+        </div>
+      </div>
+      <div class="log-box">
+        <h3 style="margin:0 0 10px;color:#0d47a1;font-size:15px;">Lịch sử mức đầy theo thời gian (dữ liệu ghi nhận thật)</h3>
+        <div class="p3-filter">
+          <label for="p3-bin">Thùng</label>
+          <select id="p3-bin" onchange="loadP3Analytics()">
+            <option>BIN_01</option><option>BIN_02</option><option>BIN_03</option>
+            <option>BIN_04</option><option>BIN_05</option><option>BIN_06</option>
+          </select>
+          <label for="p3-window">Khoảng thời gian</label>
+          <select id="p3-window" onchange="loadP3Analytics()">
+            <option value="1">1 giờ</option><option value="6">6 giờ</option>
+            <option value="24" selected>24 giờ</option><option value="168">7 ngày</option>
+          </select>
+          <button class="btn btn-secondary" onclick="loadP3Analytics()">Cập nhật</button>
+          <span class="p3-note" id="p3-points-status"></span>
+        </div>
+        <canvas id="historyChart" height="90"></canvas>
+        <p class="p3-note">Chỉ tính bản tin cảm biến hợp lệ đã lưu trong SQLite; khoảng trống không có bản tin sẽ không được tự tạo số liệu. Đây là lịch sử nhận tại máy chủ, chưa phải dịch vụ Cloud đang triển khai thực tế.</p>
+      </div>
       <div class="log-box" style="grid-column:span 2;">
         <h3 style="margin-top:0;font-size:14px;color:#b45309;">🚨 Nhật ký ưu tiên, cảnh báo & xử lý</h3>
         <div style="max-height:230px;overflow-y:auto;">
@@ -229,6 +280,21 @@
       </div>
     </div>
   </div>
+  <div id="login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title">
+    <form class="modal-box" onsubmit="loginDashboard(event)">
+      <h3 id="login-title" style="margin:0;color:#0d47a1;">Đăng nhập Dashboard</h3>
+      <p class="p3-note">Tài khoản viewer, operator hoặc admin. Mật khẩu không được lưu trong trình duyệt.</p>
+      <label for="p3-username">Tên đăng nhập</label>
+      <input type="text" id="p3-username" autocomplete="username" required maxlength="32" />
+      <label for="p3-password">Mật khẩu</label>
+      <input type="password" id="p3-password" autocomplete="current-password" required />
+      <p id="p3-login-error" style="color:#b91c1c;font-size:12px;" aria-live="polite"></p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button type="button" class="btn btn-secondary" onclick="closeLoginModal()">Hủy</button>
+        <button type="submit" class="btn btn-primary" style="width:auto;">Đăng nhập</button>
+      </div>
+    </form>
+  </div>
 
   <script>
     const map = L.map('map').setView([10.8058, 106.6292], 15);
@@ -247,6 +313,152 @@
 
     let fillChartInstance = null;
     let routeChartInstance = null;
+    let historyChartInstance = null;
+    let dashboardToken = null; // P3: in-memory only; reload/logout clears the session.
+    let dashboardIdentity = null;
+    let p3LockedReads = false;
+
+    function p3ReadHeaders() {
+      return dashboardToken ? {'Authorization': `Bearer ${dashboardToken}`} : {};
+    }
+
+    function updateSessionDisplay() {
+      document.getElementById('p3-session-label').textContent = dashboardIdentity
+        ? `${dashboardIdentity.username} · ${dashboardIdentity.role}` : 'Chưa đăng nhập';
+      document.getElementById('p3-login-button').style.display = dashboardToken ? 'none' : '';
+      document.getElementById('p3-logout-button').style.display = dashboardToken ? '' : 'none';
+    }
+
+    function openLoginModal() {
+      document.getElementById('p3-login-error').textContent = '';
+      document.getElementById('login-modal').style.display = 'flex';
+      document.getElementById('p3-username').focus();
+    }
+
+    function closeLoginModal() {
+      document.getElementById('p3-password').value = '';
+      document.getElementById('login-modal').style.display = 'none';
+    }
+
+    function logoutDashboard() {
+      dashboardToken = null;
+      dashboardIdentity = null;
+      updateSessionDisplay();
+      document.getElementById('p3-stats-status').textContent = 'Đăng nhập lại để xem thống kê chi tiết.';
+      for (const id of ['p3-messages', 'p3-events', 'p3-delayed', 'p3-hazards']) {
+        document.getElementById(id).textContent = '—';
+      }
+      document.getElementById('p3-points-status').textContent = '';
+      if (historyChartInstance) { historyChartInstance.destroy(); historyChartInstance = null; }
+      if (p3LockedReads) {
+        Object.values(markers).forEach(marker => map.removeLayer(marker));
+        markers = {};
+        graphLayerGroup.clearLayers();
+        if (routeLayer) {map.removeLayer(routeLayer); routeLayer = null;}
+        if (vehicleMarker) {map.removeLayer(vehicleMarker); vehicleMarker = null;}
+        document.getElementById('bin-list').textContent = 'Đăng nhập để xem danh sách thùng.';
+        document.getElementById('log-table-body').textContent = '';
+        document.getElementById('alert-event-body').textContent = '';
+        document.getElementById('route-stats').textContent = '';
+        document.getElementById('driver-stops-list').textContent = '';
+        document.getElementById('driver-route-summary').textContent = '';
+        if (fillChartInstance) {fillChartInstance.destroy(); fillChartInstance = null;}
+        if (routeChartInstance) {routeChartInstance.destroy(); routeChartInstance = null;}
+        lastRouteData = null;
+      }
+    }
+
+    async function loginDashboard(event) {
+      event.preventDefault();
+      const errorBox = document.getElementById('p3-login-error');
+      errorBox.textContent = '';
+      // Do not transmit credentials in plaintext over an external HTTP connection.
+      if (location.protocol !== 'https:' && !['localhost', '127.0.0.1', '::1'].includes(location.hostname)) {
+        errorBox.textContent = 'Chỉ đăng nhập qua HTTPS (hoặc localhost để demo).';
+        return;
+      }
+      const username = document.getElementById('p3-username').value.trim();
+      const passwordField = document.getElementById('p3-password');
+      const password = passwordField.value;
+      passwordField.value = '';
+      try {
+        const response = await fetch('/api/auth/token', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          cache: 'no-store', body: JSON.stringify({username, password})
+        });
+        if (!response.ok) {
+          errorBox.textContent = response.status === 401 ? 'Sai tài khoản hoặc mật khẩu.'
+            : `Không thể đăng nhập (${response.status}). Kiểm tra cấu hình P3.`;
+          return;
+        }
+        const data = await response.json();
+        dashboardToken = data.access_token;
+        dashboardIdentity = {username: data.username, role: data.role};
+        updateSessionDisplay();
+        closeLoginModal();
+        await loadBins();
+        await loadLogs();
+        await loadP3Analytics();
+      } catch (error) {
+        errorBox.textContent = 'Không kết nối được Backend: ' + error.message;
+      }
+    }
+
+    async function loadP3Analytics() {
+      if (!dashboardToken) return;
+      const hours = Number(document.getElementById('p3-window').value);
+      const bin = document.getElementById('p3-bin').value;
+      const bucket = hours <= 6 ? 5 : (hours <= 24 ? 15 : 60);
+      const headers = {'Authorization': `Bearer ${dashboardToken}`};
+      const status = document.getElementById('p3-stats-status');
+      try {
+        const [summaryRes, historyRes] = await Promise.all([
+          fetch(`/api/analytics/overview?hours=${hours}`, {headers, cache:'no-store'}),
+          fetch(`/api/analytics/history?bin_id=${encodeURIComponent(bin)}&hours=${hours}&bucket_minutes=${bucket}`, {headers, cache:'no-store'})
+        ]);
+        if (summaryRes.status === 401 || historyRes.status === 401) {
+          logoutDashboard();
+          status.textContent = 'Phiên đăng nhập hết hạn. Hãy đăng nhập lại.';
+          return;
+        }
+        if (!summaryRes.ok || !historyRes.ok) throw new Error(`HTTP ${summaryRes.status}/${historyRes.status}`);
+        const summary = await summaryRes.json();
+        const history = await historyRes.json();
+        document.getElementById('p3-messages').textContent = summary.telemetry_samples;
+        document.getElementById('p3-events').textContent = summary.alert_events;
+        document.getElementById('p3-delayed').textContent = summary.delayed_at_least_30s;
+        document.getElementById('p3-hazards').textContent = `${summary.fire_active} / ${summary.tilt_active}`;
+        status.textContent = `Tổng ${summary.bin_count} thùng · TB mức đầy hợp lệ: ${summary.avg_valid_fill_percent ?? '—'}% · Lỗi cảm biến: ${summary.sensor_error_count} · Ưu tiên: ${summary.priority_count} · Trong ${hours} giờ vừa qua (SQLite).`;
+        const seconds = history.bucket_minutes * 60;
+        const byTime = new Map(history.points.map(p => [p.bucket_unix, p]));
+        const end = Math.floor(history.as_of_unix / seconds) * seconds;
+        const start = Math.floor((history.as_of_unix - hours * 3600) / seconds) * seconds;
+        const labels = [], values = [];
+        for (let t = start; t <= end; t += seconds) {
+          labels.push(new Date(t * 1000).toLocaleString('vi-VN', {
+            day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+          }));
+          values.push(byTime.get(t)?.avg_fill_percent ?? null);
+        }
+        const sampleCount = history.points.reduce((total, point) => total + point.sample_count, 0);
+        document.getElementById('p3-points-status').textContent = `${sampleCount} bản tin hợp lệ · ${history.points.length} khoảng có dữ liệu`;
+        const chartData = {labels, datasets: [{label: `${bin}: mức đầy trung bình (%)`, data: values,
+          borderColor:'#1565c0', backgroundColor:'rgba(21,101,192,.12)', borderWidth:2,
+          tension:0, spanGaps:false, pointRadius:2, fill:false}]};
+        if (!historyChartInstance) {
+          historyChartInstance = new Chart(document.getElementById('historyChart'), {
+            type:'line', data:chartData,
+            options:{responsive:true,interaction:{intersect:false,mode:'index'},
+              scales:{y:{min:0,max:100,title:{display:true,text:'Mức đầy (%)'}},x:{ticks:{maxTicksLimit:9}}}}
+          });
+        } else {
+          historyChartInstance.data = chartData;
+          historyChartInstance.update();
+        }
+      } catch (error) {
+        status.textContent = 'Không tải được dữ liệu thống kê: ' + error.message;
+      }
+    }
 
     const statusLabels = {
       "NEED_COLLECTION": "CẦN THU GOM (>=80%)",
@@ -263,6 +475,7 @@
         setTimeout(() => map.invalidateSize(), 150);
       } else if (tabId === 'tab-analytics') {
         loadLogs();
+        loadP3Analytics();
       }
     }
 
@@ -325,8 +538,10 @@
 
     async function loadBins() {
       if (currentSkipBinId !== null || isInteractingSlider) return;
+      if (p3LockedReads && !dashboardToken) return;
 
-      const res = await fetch('/api/bins');
+      const res = await fetch('/api/bins', {headers:p3ReadHeaders()});
+      if (!res.ok) return;
       const data = await res.json();
       const listEl = document.getElementById('bin-list');
       listEl.innerHTML = '';
@@ -439,15 +654,17 @@
     }
 
     // P1-1: Admin key stays in page memory only (not embedded or stored in browser storage).
+    // P3: JWT operator/admin role takes precedence. Legacy key fallback is for P1/P2 demos only.
     let adminApiKey = null;
     async function adminPost(url, body = undefined) {
       for (let attempt = 0; attempt < 2; attempt++) {
-        if (!adminApiKey) {
+        if (!dashboardToken && !adminApiKey) {
           const typed = window.prompt('Nhap khoa quan tri P1 (xem backend_server/p1_local_keys.json):');
           if (!typed || !typed.trim()) return false;
           adminApiKey = typed.trim();
         }
-        const headers = {'X-API-Key': adminApiKey};
+        const headers = dashboardToken ? {'Authorization': `Bearer ${dashboardToken}`}
+          : {'X-API-Key': adminApiKey};
         const options = {method: 'POST', headers};
         if (body !== undefined) {
           headers['Content-Type'] = 'application/json';
@@ -456,6 +673,11 @@
         try {
           const response = await fetch(url, options);
           if (response.status === 401) {
+            if (dashboardToken) {
+              logoutDashboard();
+              window.alert('Phiên JWT đã hết hạn. Vui lòng đăng nhập lại.');
+              return false;
+            }
             adminApiKey = null;
             window.alert('Khoa quan tri khong dung. Vui long nhap lai.');
             continue;
@@ -510,7 +732,7 @@
       const statsEl = document.getElementById('route-stats');
       let data;
       try {
-        const res = await fetch('/api/routes/optimize', { method: 'POST' });
+        const res = await fetch('/api/routes/optimize', { method: 'POST', headers:p3ReadHeaders() });
         if (!res.ok) {
           const errorData = await res.json().catch(() => ({}));
           throw new Error(errorData.detail || `HTTP ${res.status}`);
@@ -691,7 +913,9 @@
     }
 
     async function loadLogs() {
-      const res = await fetch('/api/logs');
+      if (p3LockedReads && !dashboardToken) return;
+      const res = await fetch('/api/logs', {headers:p3ReadHeaders()});
+      if (!res.ok) return;
       const data = await res.json();
       const tbody = document.getElementById('log-table-body');
       const eventTable = document.getElementById('alert-event-body');
@@ -759,10 +983,25 @@
       await loadBins();
     }
 
-    loadBins();
-    loadLogs();
+    (async () => {
+      try {
+        const result = await fetch('/api/ui/config');
+        if (result.ok) p3LockedReads = Boolean((await result.json()).require_login_for_reads);
+      } catch (error) { console.warn('P3 config unavailable', error); }
+      if (p3LockedReads) {
+        document.getElementById('bin-list').textContent = 'Đăng nhập để xem dữ liệu vận hành.';
+      } else {
+        await loadBins();
+        await loadLogs();
+      }
+    })();
     setInterval(loadBins, 3000);
     setInterval(loadLogs, 3000); // Cap nhat nhat ky IoT khi Wokwi dang chay
+    setInterval(() => {
+      if (dashboardToken && document.getElementById('tab-analytics').classList.contains('active')) {
+        loadP3Analytics();
+      }
+    }, 30000);
   </script>
 </body>
 </html>

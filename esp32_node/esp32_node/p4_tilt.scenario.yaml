@@ -1,0 +1,25 @@
+name: P4 MPU6050 tilt alarm then clear
+version: 1
+author: Nhom 15 HUIT
+steps:
+  - wait-serial: '[MPU] MPU6050 OK'
+  - delay: 1000ms
+  # Sideways ~53 degrees: sqrt(x^2+z^2)=1g.
+  - set-control:
+      part-id: imu_tilt
+      name: accelX
+      value: 0.8
+  - set-control:
+      part-id: imu_tilt
+      name: accelZ
+      value: 0.6
+  - wait-serial: '[HAZARD] TILT=1'
+  - set-control:
+      part-id: imu_tilt
+      name: accelX
+      value: 0
+  - set-control:
+      part-id: imu_tilt
+      name: accelZ
+      value: 1
+  - wait-serial: '[HAZARD] TILT=0'

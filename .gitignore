@@ -3,3 +3,9 @@
 # P1-1 local secrets (never commit)
 /backend_server/p1_local_keys.json
 /esp32_node/esp32_node/src/local_secrets.h
+
+# P3: NEVER commit local JWT secrets or generated runtime data
+/backend_server/p3_local_auth.json
+/backend_server/smart_waste.db
+/backend_server/__pycache__/
+/backend_server/.venv/

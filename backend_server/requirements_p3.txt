@@ -1,0 +1,2 @@
+# Install in the existing P1/P2 venv: python -m pip install -r backend_server/requirements_p3.txt
+PyJWT>=2.10,<3

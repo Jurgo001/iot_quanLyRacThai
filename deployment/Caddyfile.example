@@ -1,0 +1,14 @@
+# P3 deployment REFERENCE, not an issued certificate and not an active cloud site.
+# Replace this domain with one you own, point DNS at the VPS, open 80/443,
+# install Caddy, and run FastAPI only on 127.0.0.1:8000.
+# Docs: https://caddyserver.com/docs/automatic-https
+#       https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
+waste.example.org {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8000
+    header {
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        X-Frame-Options "DENY"
+    }
+}

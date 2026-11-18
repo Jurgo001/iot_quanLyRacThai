@@ -15,8 +15,10 @@
     { "type": "wokwi-resistor", "id": "r_r", "top": 115, "left": -60, "attrs": { "value": "220" } },
     { "type": "wokwi-pushbutton", "id": "btn_priority", "top": 140, "left": 175, "attrs": { "color": "red", "label": "Gui khan cap" } },
     { "type": "wokwi-slide-switch", "id": "sw_fault", "top": 215, "left": 185, "attrs": { "label": "Gia lap Loi Cam Bien", "value": "1" } },
-    { "type": "wokwi-slide-switch", "id": "sw_tilt", "top": 300, "left": 185, "attrs": { "label": "P2: Gia lap Thung Nghieng", "value": "1" } },
-    { "type": "wokwi-slide-switch", "id": "sw_fire", "top": 385, "left": 185, "attrs": { "label": "P2: Gia lap Nguy Co Chay", "value": "1" } }
+    { "type": "wokwi-mpu6050", "id": "imu_tilt", "top": 300, "left": 225, "attrs": { "accelX": "0", "accelY": "0", "accelZ": "1", "label": "MPU6050 - DO NGHIENG" } },
+    { "type": "wokwi-gas-sensor", "id": "mq2_gas", "top": 440, "left": 205, "attrs": { "ppm": "100", "threshold": "4.4", "label": "MQ2 - CANH BAO KHI DE CHAY" } },
+    { "type": "wokwi-resistor", "id": "r_mq2_1", "top": 435, "left": 380, "attrs": { "value": "1000" } },
+    { "type": "wokwi-resistor", "id": "r_mq2_2", "top": 480, "left": 380, "attrs": { "value": "2000" } }
   ],
   "connections": [
     [ "esp:TX0", "$serialMonitor:RX", "", [] ],
@@ -42,12 +44,16 @@
     [ "sw_fault:1", "esp:GND.1", "black", [ "v0" ] ],
     [ "sw_fault:2", "esp:D33", "purple", [ "v0" ] ],
     [ "sw_fault:3", "esp:3V3", "red", [ "v0" ] ],
-    [ "sw_tilt:1", "esp:GND.1", "black", [ "v0" ] ],
-    [ "sw_tilt:2", "esp:D32", "purple", [ "v0" ] ],
-    [ "sw_tilt:3", "esp:3V3", "red", [ "v0" ] ],
-    [ "sw_fire:1", "esp:GND.1", "black", [ "v0" ] ],
-    [ "sw_fire:2", "esp:D13", "orange", [ "v0" ] ],
-    [ "sw_fire:3", "esp:3V3", "red", [ "v0" ] ]
+    [ "imu_tilt:VCC", "esp:3V3", "red", [ "v0" ] ],
+    [ "imu_tilt:GND", "esp:GND.1", "black", [ "v0" ] ],
+    [ "imu_tilt:SDA", "esp:D21", "blue", [ "v0" ] ],
+    [ "imu_tilt:SCL", "esp:D22", "green", [ "v0" ] ],
+    [ "mq2_gas:VCC", "esp:VIN", "red", [ "v0" ] ],
+    [ "mq2_gas:GND", "esp:GND.1", "black", [ "v0" ] ],
+    [ "mq2_gas:DOUT", "r_mq2_1:1", "orange", [ "v0" ] ],
+    [ "r_mq2_1:2", "esp:D13", "orange", [ "v0" ] ],
+    [ "r_mq2_1:2", "r_mq2_2:1", "orange", [ "v0" ] ],
+    [ "r_mq2_2:2", "esp:GND.1", "black", [ "v0" ] ]
   ],
   "dependencies": {}
 }

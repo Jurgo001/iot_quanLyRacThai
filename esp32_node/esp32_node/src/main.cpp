@@ -1,9 +1,13 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <Wire.h>
 #include <esp_system.h>
 #include <math.h>
+#include <time.h>
 #include "local_secrets.h" // P1-1: untracked per-device API key
+#include "p2_durable_outbox.h"
+#include "p4_sensor_math.h"
 
 // P0 patch for Jurgo001/iot_quanLyRacThai main (original blob: 0191b888...)
 // Keep hardware pins, HTTP endpoint and bin fullness thresholds unchanged.
@@ -20,32 +24,31 @@ const int LED_YELLOW_PIN = 26;
 const int LED_RED_PIN = 27;
 const int BTN_PRIO_PIN = 14;
 const int SW_FAULT_PIN = 33;
-// P2-2: Wokwi switches emulate digital outputs of tilt / fire detectors.
-// They are NOT a physical MPU6050, smoke detector, or certified fire alarm.
-const int SW_TILT_PIN = 32;
-const int SW_FIRE_PIN = 13;  // RTC-capable GPIO for a later validated wakeup design
+// P4: Real simulated sensor components, not manual hazard toggle switches.
+// MPU6050 measures 3-axis acceleration, MQ-2 measures COMBUSTIBLE GAS risk.
+// Gas risk is mapped to the backwards-compatible fire_detected API flag;
+// it does NOT prove the presence of actual flames or a certified fire alarm.
+const uint8_t MPU_ADDR = 0x68;
+const int MPU_SDA_PIN = 21;
+const int MPU_SCL_PIN = 22;
+const int MQ2_DIGITAL_PIN = 13; // MQ2 DOUT active LOW; 5V module needs a level shifter
 
 const float D_EMPTY = 100.0f;
 const float D_FULL = 20.0f;
 const unsigned long SENSOR_SAMPLE_INTERVAL_MS = 60;
 const unsigned long SEND_INTERVAL_MS = 5000;
 const unsigned long WIFI_RETRY_INTERVAL_MS = 5000;
-const unsigned long HTTP_RETRY_INTERVAL_MS = 3000;
 const unsigned long HTTP_NEXT_INTERVAL_MS = 200;
+const unsigned long HTTP_RETRY_INITIAL_MS = 1000;
+const unsigned long HTTP_RETRY_MAX_MS = 60000;
 const unsigned long DEBUG_INTERVAL_MS = 2000;
 const unsigned long BUTTON_DEBOUNCE_MS = 40;
 const unsigned long HAZARD_DEBOUNCE_MS = 80;
+const unsigned long MPU_READ_INTERVAL_MS = 200;
+const unsigned long MPU_RECONNECT_INTERVAL_MS = 5000;
 const int SENSOR_WINDOW = 5;
 const int SMOOTH_WINDOW = 3;
-const int MAX_QUEUE = 24;
-
-struct TelemetryMessage {
-  String messageId;
-  String payload;
-  bool priority;
-};
-TelemetryMessage outbox[MAX_QUEUE];
-int outboxSize = 0;
+DurableOutbox outbox;
 
 uint32_t bootSessionId = 0;
 unsigned long msgCounter = 1;
@@ -55,6 +58,9 @@ unsigned long lastTelemetryAttemptMs = 0;
 unsigned long lastHttpAttemptMs = 0;
 unsigned long lastDebugMs = 0;
 bool lastHttpFailed = false;
+unsigned long nextRetryDelayMs = HTTP_NEXT_INTERVAL_MS;
+uint8_t consecutiveHttpFailures = 0;
+bool ntpStarted = false;
 bool haveQueuedTelemetry = false;
 float lastQueuedFill = -1.0f;
 String lastQueuedSensorStatus = "";
@@ -79,8 +85,12 @@ struct DebouncedHazard {
   explicit DebouncedHazard(int inputPin)
       : pin(inputPin), raw(HIGH), active(false), rawChangedMs(0) {}
 };
-DebouncedHazard tiltSwitch(SW_TILT_PIN);
-DebouncedHazard fireSwitch(SW_FIRE_PIN);
+DebouncedHazard gasAlarm(MQ2_DIGITAL_PIN);
+TiltAlarmState tiltAlarm;
+bool mpuAvailable = false;
+unsigned long lastMpuReadMs = 0;
+unsigned long lastMpuRetryMs = 0;
+float lastTiltAngleDeg = -1.0f;
 bool tiltDetected = false;
 bool fireDetected = false;
 
@@ -214,8 +224,64 @@ bool updateHazardSwitch(DebouncedHazard& sensor, unsigned long now) {
   return false;
 }
 
+bool initMpu6050() {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B); // PWR_MGMT_1: exit sleep mode
+  Wire.write(0x00);
+  if (Wire.endTransmission() != 0) return false;
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x1C); // ACCEL_CONFIG: +/-2g = 16384 LSB/g
+  Wire.write(0x00);
+  return Wire.endTransmission() == 0;
+}
+
+bool readMpuAngleDegrees(float& degrees) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B); // ACCEL_XOUT_H..ACCEL_ZOUT_L
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(MPU_ADDR, (uint8_t)6, (uint8_t)true) != 6) return false;
+  int16_t rawX = (int16_t)((Wire.read() << 8) | Wire.read());
+  int16_t rawY = (int16_t)((Wire.read() << 8) | Wire.read());
+  int16_t rawZ = (int16_t)((Wire.read() << 8) | Wire.read());
+  return gravityTiltDegrees((float)rawX, (float)rawY, (float)rawZ, degrees);
+}
+
+bool updateMpuTilt(unsigned long now) {
+  if (!mpuAvailable) {
+    if (lastMpuRetryMs != 0 && now - lastMpuRetryMs < MPU_RECONNECT_INTERVAL_MS) return false;
+    lastMpuRetryMs = now;
+    mpuAvailable = initMpu6050();
+    Serial.println(mpuAvailable ? "[MPU] MPU6050 OK (I2C 0x68)" : "[MPU] Not found; retry after 5s");
+    if (!mpuAvailable) return false;
+    // A newly attached sensor must first provide stable gravity samples.
+    tiltAlarm.reset();
+    tiltDetected = false;
+  }
+  if (now - lastMpuReadMs < MPU_READ_INTERVAL_MS) return false;
+  lastMpuReadMs = now;
+  float angle = 0.0f;
+  if (!readMpuAngleDegrees(angle)) {
+    mpuAvailable = false;
+    lastMpuRetryMs = now;
+    Serial.println("[MPU] Read failed; hold last state until sensor reconnect");
+    return false;
+  }
+  lastTiltAngleDeg = angle;
+  bool changed = tiltAlarm.update(angle, now);
+  tiltDetected = tiltAlarm.active;
+  return changed;
+}
+
 void maintainWifi(unsigned long now) {
-  if (WiFi.status() == WL_CONNECTED) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    // NTP is optional: captured_at_unix=0 is used until valid UTC is known.
+    if (!ntpStarted) {
+      configTime(0, 0, "pool.ntp.org", "time.google.com");
+      ntpStarted = true;
+    }
+    return;
+  }
+  if (outbox.count() > 0) outbox.markOffline();
   if (now - lastWifiRetryMs >= WIFI_RETRY_INTERVAL_MS) {
     lastWifiRetryMs = now;
     Serial.println("[WIFI] Chua ket noi, thu reconnect khong chan loop...");
@@ -223,58 +289,76 @@ void maintainWifi(unsigned long now) {
   }
 }
 
-void removeOutboxAt(int index) {
-  if (index < 0 || index >= outboxSize) return;
-  for (int i = index; i < outboxSize - 1; ++i) outbox[i] = outbox[i + 1];
-  outbox[--outboxSize] = TelemetryMessage();
+String messageIdFor(const EdgeTelemetryRecord& record) {
+  return String(BIN_ID) + "_MSG_" + String((unsigned long)record.bootId, HEX) + "_" + String((unsigned long)record.sequence);
 }
 
-bool enqueueTelemetry(bool priority, bool hazardTransition, unsigned long now) {
-  // Hazard transitions deserve FIFO protection but MUST NOT silently toggle
-  // the manual is_priority flag controlled by the physical emergency button.
-  bool urgent = priority || hazardTransition;
-  if (outboxSize == MAX_QUEUE) {
-    if (!urgent) {
-      Serial.println("[QUEUE] FULL - bo qua 1 ban tin thong thuong; can bo nho ben vung neu can offline lau.");
-      return false;
-    }
-    int discardIndex = -1;
-    for (int i = 0; i < outboxSize; ++i) {
-      if (!outbox[i].priority) { discardIndex = i; break; }
-    }
-    if (discardIndex < 0) {
-      Serial.println("[QUEUE] FULL - khong the ghi them su kien uu tien; can bo nho ben vung.");
-      return false;
-    }
-    Serial.println("[QUEUE] FULL - thay 1 ban tin thuong bang ban tin uu tien.");
-    removeOutboxAt(discardIndex);
-  }
-
-  String messageId = String(BIN_ID) + "_MSG_" + String(bootSessionId, HEX) + "_" + String(msgCounter++);
+String buildJsonPayload(const EdgeTelemetryRecord& rec) {
+  String messageId = messageIdFor(rec);
+  bool sensorError = (rec.flags & QF_SENSOR_ERROR) != 0;
   String payload = "{";
   payload += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
   payload += "\"bin_id\":\"" + String(BIN_ID) + "\",";
   payload += "\"message_id\":\"" + messageId + "\",";
-  // As in original firmware, measured_at is uptime in seconds, NOT Unix/NTP time.
-  payload += "\"measured_at\":" + String(now / 1000) + ",";
-  payload += "\"distance_cm\":" + String(distanceCm, 1) + ",";
-  payload += "\"fill_percent\":" + String(fillPercent, 1) + ",";
-  payload += "\"sensor_status\":\"" + sensorStatus + "\",";
-  payload += "\"is_priority\":" + String(priority ? "true" : "false") + ",";
-  payload += "\"tilt_detected\":" + String(tiltDetected ? "true" : "false") + ",";
-  payload += "\"fire_detected\":" + String(fireDetected ? "true" : "false");
+  payload += "\"measured_at\":" + String((unsigned long)rec.uptimeSeconds) + ",";
+  if (rec.capturedAtUnix != 0) {
+    payload += "\"captured_at_unix\":" + String((unsigned long)rec.capturedAtUnix) + ",";
+  }
+  payload += "\"distance_cm\":" + String(rec.distanceDeciCm / 10.0f, 1) + ",";
+  payload += "\"fill_percent\":" + String(rec.fillDeciPercent / 10.0f, 1) + ",";
+  payload += "\"sensor_status\":\"" + String(sensorError ? "SENSOR_ERROR" : "OK") + "\",";
+  payload += "\"is_priority\":" + String((rec.flags & QF_PRIORITY) ? "true" : "false") + ",";
+  payload += "\"tilt_detected\":" + String((rec.flags & QF_TILT) ? "true" : "false") + ",";
+  payload += "\"fire_detected\":" + String((rec.flags & QF_FIRE) ? "true" : "false");
   payload += "}";
+  return payload;
+}
 
-  outbox[outboxSize].messageId = messageId;
-  outbox[outboxSize].payload = payload;
-  outbox[outboxSize].priority = urgent;
-  outboxSize++;
+bool enqueueTelemetry(bool priority, bool hazardTransition, unsigned long now) {
+  // Hardware emergency priority remains manually latched in backend; alarms
+  // never silently override is_priority or the P1 route business rules.
+  const bool urgent = priority || hazardTransition;
+  EdgeTelemetryRecord record = {};
+  record.bootId = bootSessionId;
+  record.sequence = (uint32_t)msgCounter++;
+  record.uptimeSeconds = (uint32_t)(now / 1000);
+  time_t utc = time(nullptr);
+  record.capturedAtUnix = (utc >= (time_t)1609459200 && (uint64_t)utc <= UINT32_MAX)
+                              ? (uint32_t)utc : 0;
+  record.distanceDeciCm = (int16_t)lroundf(distanceCm * 10.0f);
+  record.fillDeciPercent = (int16_t)lroundf(fillPercent * 10.0f);
+  record.flags = (sensorStatus == "SENSOR_ERROR" ? QF_SENSOR_ERROR : 0) |
+                 (priority ? QF_PRIORITY : 0) |
+                 (tiltDetected ? QF_TILT : 0) |
+                 (fireDetected ? QF_FIRE : 0) |
+                 (urgent ? QF_URGENT : 0);
+  // When offline, every accepted record goes to NVS. When online, only
+  // transitions/priority persist immediately, avoiding frequent flash writes.
+  const bool durable = urgent || lastHttpFailed || WiFi.status() != WL_CONNECTED;
+  if (!outbox.enqueue(record, durable)) return false;
   if (priority) Serial.println("[PRIORITY] Nhan nut khan cap tai thung! Da xep hang ban tin uu tien.");
-  Serial.printf("[QUEUE] %s | waiting=%d\n", messageId.c_str(), outboxSize);
+  Serial.printf("[QUEUE] %s | waiting=%u NVS=%d\n", messageIdFor(record).c_str(),
+                (unsigned)outbox.count(), outbox.hasPersistentBacklog());
   return true;
 }
 
-bool sendTelemetryToBackend(const String& payload) {
+// Minimal JSON string-field extractor for the exact server ACK contract.
+// JSON-escaped chars cannot occur inside generated message_id/status values.
+String readAckString(const String& body, const char* field) {
+  String needle = String("\"") + field + "\"";
+  int p = body.indexOf(needle);
+  if (p < 0) return "";
+  p = body.indexOf(':', p + needle.length());
+  if (p < 0) return "";
+  ++p;
+  while (p < body.length() && (body[p] == ' ' || body[p] == '\t' || body[p] == '\n')) ++p;
+  if (p >= body.length() || body[p++] != '"') return "";
+  int stop = body.indexOf('"', p);
+  if (stop < 0) return "";
+  return body.substring(p, stop);
+}
+
+bool sendTelemetryToBackend(const String& payload, const String& expectedId) {
   if (WiFi.status() != WL_CONNECTED) return false;
   HTTPClient http;
   if (!http.begin(BACKEND_URL)) return false;
@@ -284,9 +368,17 @@ bool sendTelemetryToBackend(const String& payload) {
   int code = http.POST(payload);
   if (code >= 200 && code < 300) {
     String response = http.getString();
-    Serial.printf("[ACK] HTTP %d: %s\n", code, response.c_str());
+    String responseId = readAckString(response, "message_id");
+    String status = readAckString(response, "status");
+    bool acknowledged = responseId == expectedId &&
+      (status == "accepted" || status == "duplicate_ignored" || status == "sensor_error_logged");
+    if (acknowledged) {
+      Serial.printf("[ACK] HTTP %d id=%s status=%s\n", code, responseId.c_str(), status.c_str());
+    } else {
+      Serial.printf("[HTTP] HTTP %d but wrong/missing ACK; keep %s\n", code, expectedId.c_str());
+    }
     http.end();
-    return true;
+    return acknowledged;
   }
   Serial.printf("[HTTP] loi code=%d; giu nguyen message_id de retry\n", code);
   http.end();
@@ -294,16 +386,25 @@ bool sendTelemetryToBackend(const String& payload) {
 }
 
 void flushOutbox(unsigned long now) {
-  if (outboxSize == 0 || WiFi.status() != WL_CONNECTED) return;
-  unsigned long interval = lastHttpFailed ? HTTP_RETRY_INTERVAL_MS : HTTP_NEXT_INTERVAL_MS;
-  if (now - lastHttpAttemptMs < interval) return;
+  EdgeTelemetryRecord oldest = {};
+  if (!outbox.peek(oldest) || WiFi.status() != WL_CONNECTED) return;
+  if (now - lastHttpAttemptMs < nextRetryDelayMs) return;
   lastHttpAttemptMs = now;
-  String firstId = outbox[0].messageId;
-  bool sent = sendTelemetryToBackend(outbox[0].payload);
+  String firstId = messageIdFor(oldest);
+  bool sent = sendTelemetryToBackend(buildJsonPayload(oldest), firstId);
   lastHttpFailed = !sent;
   if (sent) {
     Serial.println("[QUEUE] Da nhan ACK: " + firstId);
-    removeOutboxAt(0);
+    outbox.removeAcknowledgedFront();
+    consecutiveHttpFailures = 0;
+    nextRetryDelayMs = HTTP_NEXT_INTERVAL_MS;
+  } else {
+    outbox.markOffline();
+    if (consecutiveHttpFailures < 7) ++consecutiveHttpFailures;
+    unsigned long exponentialMs = HTTP_RETRY_INITIAL_MS << (consecutiveHttpFailures - 1);
+    if (exponentialMs > HTTP_RETRY_MAX_MS) exponentialMs = HTTP_RETRY_MAX_MS;
+    nextRetryDelayMs = exponentialMs + (esp_random() % 400);
+    Serial.printf("[RETRY] after %lu ms; pending=%u\n", nextRetryDelayMs, (unsigned)outbox.count());
   }
 }
 
@@ -316,10 +417,11 @@ void setup() {
   pinMode(LED_RED_PIN, OUTPUT);
   pinMode(BTN_PRIO_PIN, INPUT_PULLUP);
   pinMode(SW_FAULT_PIN, INPUT_PULLUP);
-  pinMode(SW_TILT_PIN, INPUT_PULLUP);
-  pinMode(SW_FIRE_PIN, INPUT_PULLUP);
+  pinMode(MQ2_DIGITAL_PIN, INPUT); // MQ-2 DOUT drives logic; LOW = gas exceeded threshold
+  Wire.begin(MPU_SDA_PIN, MPU_SCL_PIN);
+  outbox.begin();  // Restore power-loss-safe backlog before networking.
   bootSessionId = esp_random();
-  Serial.println("=== SMART WASTE IoT - P2-Stage1: Median + SMA, simulated tilt/fire ===");
+  Serial.println("=== SMART WASTE IoT - P4: MPU6050 + MQ2, P2 outbox, P3 backend ===");
   Serial.printf("[BOOT] session=%08lx sw_fault=%d\n", (unsigned long)bootSessionId, digitalRead(SW_FAULT_PIN));
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
@@ -331,12 +433,12 @@ void loop() {
   unsigned long now = millis();
   maintainWifi(now);
   bool priorityEvent = buttonPressedOnce(now);
-  bool hazardChanged = updateHazardSwitch(tiltSwitch, now);
-  hazardChanged = updateHazardSwitch(fireSwitch, now) || hazardChanged;
-  tiltDetected = tiltSwitch.active;
-  fireDetected = fireSwitch.active;
+  bool hazardChanged = updateMpuTilt(now);
+  hazardChanged = updateHazardSwitch(gasAlarm, now) || hazardChanged;
+  fireDetected = gasAlarm.active;
   if (hazardChanged) {
-    Serial.printf("[HAZARD] TILT=%d FIRE=%d (Wokwi simulated inputs)\n", tiltDetected, fireDetected);
+    Serial.printf("[HAZARD] TILT=%d (angle=%.1f deg) GAS_FIRE_RISK=%d (MQ2_DOUT=%d)\n",
+                  tiltDetected, lastTiltAngleDeg, fireDetected, digitalRead(MQ2_DIGITAL_PIN));
   }
   sampleSensor(now);
   updateLocalLeds(fillPercent, sensorStatus);
@@ -358,9 +460,10 @@ void loop() {
 
   if (now - lastDebugMs >= DEBUG_INTERVAL_MS) {
     lastDebugMs = now;
-    Serial.printf("[SENSOR] sw_fault=%d median=%.1f dist_sma=%.1f cm fill=%.1f%% status=%s tilt=%d fire=%d queue=%d WiFi=%d\n",
+    Serial.printf("[SENSOR] sw_fault=%d median=%.1f dist_sma=%.1f cm fill=%.1f%% status=%s tilt=%d angle=%.1f deg gas_risk=%d queue=%d WiFi=%d\n",
                   digitalRead(SW_FAULT_PIN), lastMedianCm, distanceCm, fillPercent,
-                  sensorStatus.c_str(), tiltDetected, fireDetected, outboxSize, WiFi.status() == WL_CONNECTED);
+                  sensorStatus.c_str(), tiltDetected, lastTiltAngleDeg, fireDetected,
+                  (int)outbox.count(), WiFi.status() == WL_CONNECTED);
   }
   flushOutbox(millis());
   // HTTPClient POST can still block for up to its timeout (1.5 s); not hard real-time.

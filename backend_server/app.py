@@ -5,12 +5,17 @@ import heapq
 import json
 import secrets
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from typing import List, Optional, Literal
-from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Depends, Header, Query
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict, StrictBool, model_validator
+if __package__:
+    from .p3_auth import init_auth_tables, authenticate, issue_token, verify_bearer
+else:
+    # P2 tests load app.py into an isolated temporary directory as a module.
+    from p3_auth import init_auth_tables, authenticate, issue_token, verify_bearer
 
 app = FastAPI(title="Hệ Thống Quản Lý Rác Thải Thông Minh - Nhóm 15 HUIT")
 
@@ -18,12 +23,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-API-Key"],
+    allow_headers=["Content-Type", "X-API-Key", "Authorization"],
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_FILE = os.path.join(BASE_DIR, "smart_waste.db")
+DB_FILE = os.environ.get("IOT_DB_PATH", os.path.join(BASE_DIR, "smart_waste.db"))
 HTML_FILE = os.path.join(BASE_DIR, "index.html")
+LOCK_READS = os.getenv("IOT_P3_LOCK_READS", "0") == "1"
+DISABLE_LEGACY_ADMIN = os.getenv("IOT_P3_DISABLE_LEGACY_ADMIN", "0") == "1"
 
 # P1-1: Demo-only keys generated on this PC, never commit this JSON to Git.
 LOCAL_KEYS_FILE = os.path.join(BASE_DIR, "p1_local_keys.json")
@@ -44,9 +51,34 @@ def require_device_key(x_api_key: Optional[str] = Header(default=None, alias="X-
         raise HTTPException(status_code=401, detail="Device API key missing or invalid")
 
 
-def require_admin_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
-    if not x_api_key or not secrets.compare_digest(x_api_key, ADMIN_API_KEY):
+def require_admin_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+                      authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    # Backwards-compatible P1 admin key, including all Stage1/Stage2 regression tests.
+    # P3 operator/admin users may instead send a short-lived signed JWT.
+    if x_api_key is not None:
+        if not DISABLE_LEGACY_ADMIN and secrets.compare_digest(x_api_key, ADMIN_API_KEY):
+            return
         raise HTTPException(status_code=401, detail="Admin API key missing or invalid")
+    if authorization:
+        verify_bearer(DB_FILE, authorization, {"operator", "admin"})
+        return
+    raise HTTPException(status_code=401, detail="Admin API key or operator/admin token required")
+
+
+def require_reporting_user(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    return verify_bearer(DB_FILE, authorization, {"viewer", "operator", "admin"})
+
+
+def require_read_access(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    # Stage1/2 demo can keep public reads; deploy with LOCK_READS=1 for JWT RBAC.
+    if LOCK_READS:
+        return verify_bearer(DB_FILE, authorization, {"viewer", "operator", "admin"})
+
+
+@app.get("/api/ui/config")
+def ui_config():
+    return {"require_login_for_reads": LOCK_READS,
+            "legacy_admin_enabled": not DISABLE_LEGACY_ADMIN}
 
 
 # Điểm tập kết xe rác (Depot): Cổng chính ĐH Công Thương TP.HCM (140 Lê Trọng Tấn)
@@ -135,6 +167,21 @@ def init_db():
         sensor_status TEXT,
         received_at REAL
     )''')
+    # P3: time-series oriented access on the existing append-only readings.
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_telemetry_bin_time
+        ON telemetry_logs(bin_id, received_at DESC)''')
+    # P2-B: additive delivery audit; preserve the legacy telemetry_logs schema.
+    # A message can be received long after it was measured during an outage.
+    c.execute('''CREATE TABLE IF NOT EXISTS telemetry_delivery_audit (
+        message_id TEXT PRIMARY KEY,
+        captured_at_unix INTEGER,
+        received_at REAL NOT NULL,
+        delivery_delay_seconds REAL,
+        transport TEXT NOT NULL DEFAULT 'WIFI_HTTP_JSON',
+        FOREIGN KEY(message_id) REFERENCES telemetry_logs(message_id)
+    )''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_delivery_received
+        ON telemetry_delivery_audit(received_at DESC)''')
     c.execute('''CREATE TABLE IF NOT EXISTS trip_stops (
         stop_order INTEGER,
         bin_id TEXT PRIMARY KEY,
@@ -172,8 +219,11 @@ def init_db():
         description TEXT NOT NULL,
         created_at REAL NOT NULL
     )''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_alert_events_time
+        ON alert_events(created_at DESC)''')
     conn.commit()
     conn.close()
+    init_auth_tables(DB_FILE)
 
 init_db()
 
@@ -184,6 +234,8 @@ class TelemetryInput(BaseModel):
     bin_id: str = Field(pattern=r"^BIN_0[1-6]$")
     message_id: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.-]+$")
     measured_at: int = Field(ge=0)  # ESP32 uptime seconds, NOT Unix timestamp.
+    # P2-B: only a synchronized real UTC timestamp; absent for devices without NTP/RTC.
+    captured_at_unix: Optional[int] = Field(default=None, ge=1609459200, le=4294967295)
     distance_cm: float = Field(allow_inf_nan=False)
     fill_percent: float = Field(allow_inf_nan=False)
     sensor_status: Literal["OK", "SENSOR_ERROR"]
@@ -332,6 +384,9 @@ def set_bin_priority(req: PriorityInput, _authorized: None = Depends(require_adm
 def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_device_key)):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # Atomically serialize check+insert+state transitions. A retry arriving at
+    # the same moment cannot produce two events or crash on duplicate PK.
+    c.execute("BEGIN IMMEDIATE")
 
     # Verify registered device/bin pairing before inserting any telemetry row.
     c.execute("SELECT device_id, status, pending_status, consecutive_count, fill_percent, is_priority, sensor_status, last_updated, tilt_detected, fire_detected FROM bins WHERE bin_id = ?", (data.bin_id,))
@@ -356,6 +411,10 @@ def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_
     now = time.time()
     c.execute("INSERT INTO telemetry_logs VALUES (?,?,?,?,?,?,?)",
               (data.message_id, data.bin_id, data.device_id, data.distance_cm, data.fill_percent, data.sensor_status, now))
+    delay = max(0.0, now - data.captured_at_unix) if data.captured_at_unix is not None else None
+    c.execute('''INSERT INTO telemetry_delivery_audit
+        (message_id, captured_at_unix, received_at, delivery_delay_seconds)
+        VALUES (?,?,?,?)''', (data.message_id, data.captured_at_unix, now, delay))
     new_prio = 1 if data.is_priority else old_prio
     if data.is_priority and not old_prio:
         log_alert_event(c, data.bin_id, "PRIORITY_ON", "Nút khẩn cấp trên Wokwi", now)
@@ -382,7 +441,7 @@ def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_
                   (new_prio, now, data.bin_id))
         conn.commit()
         conn.close()
-        return {"status": "sensor_error_logged", "bin_id": data.bin_id}
+        return {"status": "sensor_error_logged", "bin_id": data.bin_id, "message_id": data.message_id}
 
     candidate_status = classify_fill(data.fill_percent)
     if candidate_status == pending_status:
@@ -401,7 +460,110 @@ def receive_telemetry(data: TelemetryInput, _authorized: None = Depends(require_
               (data.distance_cm, data.fill_percent, new_status, pending_status, consecutive_count, new_prio, now, data.bin_id))
     conn.commit()
     conn.close()
-    return {"status": "accepted", "bin_id": data.bin_id, "confirmed_status": new_status, "consecutive": consecutive_count}
+    # ACK must echo the exact message_id. Only then may the device dequeue.
+    return {"status": "accepted", "bin_id": data.bin_id, "message_id": data.message_id,
+            "confirmed_status": new_status, "consecutive": consecutive_count}
+
+
+@app.get("/api/network/stats")
+def get_network_stats(_authorized: None = Depends(require_admin_key)):
+    """Delivery observability for the edge-offline demo; no device API key leaks."""
+    with closing(sqlite3.connect(DB_FILE)) as conn:
+        count, delayed, worst = conn.execute('''SELECT COUNT(*),
+            COALESCE(SUM(CASE WHEN delivery_delay_seconds >= 30 THEN 1 ELSE 0 END), 0),
+            MAX(delivery_delay_seconds) FROM telemetry_delivery_audit''').fetchone()
+        latest = conn.execute('''SELECT message_id, captured_at_unix, received_at,
+            delivery_delay_seconds FROM telemetry_delivery_audit
+            ORDER BY received_at DESC LIMIT 10''').fetchall()
+    return {"transport": "WIFI_HTTP_JSON", "total_received": count,
+            "delayed_at_least_30s": delayed, "max_delivery_delay_seconds": worst,
+            "recent": [{"message_id": r[0], "captured_at_unix": r[1],
+                        "received_at": r[2], "delivery_delay_seconds": r[3]} for r in latest]}
+
+
+# P3 / Câu 2C: short-lived JWT accounts are separate from the device API key.
+# Account creation is intentionally offline via p3_setup.py, with no shipped passwords.
+class LoginInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=1, max_length=256)
+
+
+@app.post("/api/auth/token")
+def login(req: LoginInput):
+    identity = authenticate(DB_FILE, req.username, req.password)
+    token = issue_token(identity)
+    return JSONResponse({"access_token": token, "token_type": "bearer",
+                         "expires_in": 1800, "role": identity["role"],
+                         "username": identity["username"]}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/auth/me")
+def who_am_i(identity: dict = Depends(require_reporting_user)):
+    return identity
+
+
+@app.get("/api/analytics/overview")
+def analytics_overview(hours: int = Query(default=24, ge=1, le=168),
+                       _identity: dict = Depends(require_reporting_user)):
+    """Live operational snapshot and strictly windowed telemetry/alert metrics."""
+    now = time.time()
+    since = now - hours * 3600
+    with closing(sqlite3.connect(DB_FILE)) as conn:
+        bins = conn.execute('''SELECT COUNT(*),
+            SUM(CASE WHEN sensor_status='SENSOR_ERROR' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN fire_detected=1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN tilt_detected=1 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN is_priority=1 THEN 1 ELSE 0 END),
+            AVG(CASE WHEN sensor_status='OK' AND fill_percent>=0 THEN fill_percent END)
+            FROM bins''').fetchone()
+        samples = conn.execute("SELECT COUNT(*) FROM telemetry_logs WHERE received_at>=?", (since,)).fetchone()[0]
+        alerts = conn.execute("SELECT COUNT(*) FROM alert_events WHERE created_at>=?", (since,)).fetchone()[0]
+        delays = conn.execute('''SELECT COUNT(*),
+            SUM(CASE WHEN delivery_delay_seconds>=30 THEN 1 ELSE 0 END),
+            AVG(delivery_delay_seconds)
+            FROM telemetry_delivery_audit WHERE received_at>=?''', (since,)).fetchone()
+    return {
+        "as_of_unix": now, "window_hours": hours, "bin_count": bins[0],
+        "sensor_error_count": bins[1] or 0, "fire_active": bins[2] or 0,
+        "tilt_active": bins[3] or 0, "priority_count": bins[4] or 0,
+        "avg_valid_fill_percent": round(bins[5], 1) if bins[5] is not None else None,
+        "telemetry_samples": samples, "alert_events": alerts,
+        "delivery_samples": delays[0], "delayed_at_least_30s": delays[1] or 0,
+        "avg_delivery_delay_seconds": round(delays[2], 2) if delays[2] is not None else None,
+        "source": "local_sqlite_real_records",
+    }
+
+
+@app.get("/api/analytics/history")
+def analytics_history(bin_id: str = Query(default="BIN_01", pattern=r"^BIN_0[1-6]$"),
+                      hours: int = Query(default=24, ge=1, le=168),
+                      bucket_minutes: int = Query(default=15, ge=5, le=60),
+                      _identity: dict = Depends(require_reporting_user)):
+    """Aggregate actual received readings; no invented interpolation or demo series."""
+    if bucket_minutes not in (5, 15, 60):
+        raise HTTPException(status_code=422, detail="bucket_minutes must be 5, 15 or 60")
+    now = time.time()
+    since = now - hours * 3600
+    bucket_seconds = bucket_minutes * 60
+    with closing(sqlite3.connect(DB_FILE)) as conn:
+        found = conn.execute("SELECT 1 FROM bins WHERE bin_id=?", (bin_id,)).fetchone()
+        if not found:
+            raise HTTPException(status_code=404, detail="Bin not found")
+        points = conn.execute('''SELECT CAST(received_at / ? AS INTEGER) * ? AS bucket_unix,
+            COUNT(*) AS sample_count, ROUND(AVG(fill_percent), 2),
+            ROUND(MIN(fill_percent), 2), ROUND(MAX(fill_percent), 2)
+            FROM telemetry_logs
+            WHERE bin_id=? AND received_at>=? AND received_at<=?
+                AND sensor_status='OK' AND fill_percent BETWEEN 0 AND 100
+            GROUP BY CAST(received_at / ? AS INTEGER)
+            ORDER BY bucket_unix ASC''',
+            (bucket_seconds, bucket_seconds, bin_id, since, now, bucket_seconds)).fetchall()
+    return {"bin_id": bin_id, "window_hours": hours, "bucket_minutes": bucket_minutes,
+            "as_of_unix": now, "source": "telemetry_logs.received_at",
+            "points": [{"bucket_unix": int(row[0]), "sample_count": row[1],
+                        "avg_fill_percent": row[2], "min_fill_percent": row[3],
+                        "max_fill_percent": row[4]} for row in points]}
 
 # 2. API Giả lập trực tiếp các nút IoT (BIN_01 .. BIN_06) từ bảng điều khiển Web
 @app.post("/api/simulate/bin")
@@ -449,7 +611,7 @@ def simulate_bin_node(req: SimulateBinInput, _authorized: None = Depends(require
 
 # 3. API Truy vấn danh sách thùng rác + Đồ thị cục bộ
 @app.get("/api/bins")
-def get_bins():
+def get_bins(_authorized: Optional[dict] = Depends(require_read_access)):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT bin_id, device_id, name, lat, lng, distance_cm, fill_percent, status, sensor_status, is_priority, last_updated, consecutive_count, tilt_detected, fire_detected FROM bins ORDER BY bin_id ASC")
@@ -500,7 +662,7 @@ def get_bins():
 
 # 4. API Lấy nhật ký bản tin IoT & lịch sử chuyến đi
 @app.get("/api/logs")
-def get_system_logs():
+def get_system_logs(_authorized: Optional[dict] = Depends(require_read_access)):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT message_id, bin_id, device_id, distance_cm, fill_percent, sensor_status, received_at FROM telemetry_logs ORDER BY received_at DESC LIMIT 25")
@@ -582,7 +744,7 @@ def solve_tsp_nn_and_2opt(nodes, cost_matrix):
 
 # 5. API Lập tuyến thu gom tối ưu
 @app.post("/api/routes/optimize")
-def optimize_route():
+def optimize_route(_authorized: Optional[dict] = Depends(require_read_access)):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT bin_id, name, lat, lng, fill_percent, status, is_priority FROM bins ORDER BY lat DESC")
